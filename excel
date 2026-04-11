@@ -1,0 +1,1401 @@
+/***************
+ * CONFIG
+ ***************/
+const SHEET_NAMES = {
+  sections: "Разделы",
+  checklist: "Вопросы",
+  branches: "Адреса",
+  roll_weights: "Вес роллов",
+  inspectors: "Проверяющие",
+  submissions: "Результаты",
+  answers: "Ответы",
+  logs: "Логи",
+};
+
+// IMPORTANT: set this to the ID of the Google Spreadsheet that contains your questions
+const SPREADSHEET_ID = "1Ln_cnU64l1NZRIDk2iAInkcFM1ACf6_2aiwqz7X8caw";
+
+// Telegram Bot (for sending messages after submit)
+// Set your bot token here. Without it, sendMessage will be skipped.
+const TELEGRAM_BOT_TOKEN = "8477123859:AAEzpqN8tPNm9AUuuhJql-uoDS6ijX2lzgQ";
+
+// Заголовки для листов с результатами
+const SUBMISSIONS_HEADERS = [
+  "submission_id",
+  "submitted_at",
+  "fio",
+  "city",
+  "branch_id",
+  "branch_name",
+  "zone",
+  "inspection_area",
+  "percent",
+  "earned",
+  "max_score",
+  "tg_user_id",
+  "meta_json",
+];
+
+const ANSWERS_HEADERS = [
+  "submission_id",
+  "submitted_at",
+  "fio",
+  "city",
+  "branch_id",
+  "branch_name",
+  "section_code",
+  "section_title",
+  "question_id",
+  "critikal",
+  "question_text",
+  "severity",
+  "answer_key",
+  "answer_text",
+  "score_earned",
+  "score_max",
+  "comment",
+  "photos_json",
+];
+
+const INSPECTORS_HEADERS = [
+  "tg_user_id",
+  "fio",
+  "tg_username",
+  "tg_first_name",
+  "tg_last_name",
+  "tg_name",
+  "updated_at",
+];
+
+// Зоны (настройки теперь задаются в коде, без листа "Настройки")
+const SETTINGS = {
+  block_green_if_critical: true,
+  yellow_zone_max_percent: 80,
+  red_zone_max_percent: 70,
+  grey_zone_max_percent: "",
+};
+
+const MY_SUBMISSIONS_DEFAULT_LIMIT = 200;
+
+const LOG_HEADERS = ["ts", "level", "message", "data"];
+
+/***************
+ * GET (data API)
+ ***************/
+function doGet(e) {
+  try {
+    const action = e?.parameter?.action ? String(e.parameter.action) : "all";
+    const callback = e?.parameter?.callback ? String(e.parameter.callback) : null;
+    if (action === "ping") {
+      return output_({ ok: true, action: "ping", ts: new Date().toISOString() }, callback);
+    }
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+
+    let payload;
+    if (action === "all") {
+      payload = {
+        sections: readSheetAsObjects_(ss, SHEET_NAMES.sections),
+        checklist: readSheetAsObjects_(ss, SHEET_NAMES.checklist),
+        branches: readSheetAsObjects_(ss, SHEET_NAMES.branches),
+        roll_weights: readSheetAsObjects_(ss, SHEET_NAMES.roll_weights),
+        inspectors: readSheetAsObjects_(ss, SHEET_NAMES.inspectors),
+        settings: SETTINGS,
+        meta: { updatedAt: new Date().toISOString() },
+      };
+    } else if (action === "sections") payload = readSheetAsObjects_(ss, SHEET_NAMES.sections);
+    else if (action === "checklist") payload = readSheetAsObjects_(ss, SHEET_NAMES.checklist);
+    else if (action === "branches") payload = readSheetAsObjects_(ss, SHEET_NAMES.branches);
+    else if (action === "settings") payload = SETTINGS;
+    else if (action === "my_submissions") {
+      const tgUserId = e?.parameter?.tg_user_id ? String(e.parameter.tg_user_id).trim() : "";
+      const limitRaw = e?.parameter?.limit ? String(e.parameter.limit).trim() : "";
+      payload = getMySubmissionsPayload_(ss, tgUserId, limitRaw);
+    }
+    else if (action === "telegram_login") {
+      const loginData = {};
+      const fields = ["id", "first_name", "last_name", "username", "photo_url", "auth_date", "hash"];
+      fields.forEach((key) => {
+        const value = e?.parameter?.[key];
+        if (value !== undefined && value !== null && String(value).trim() !== "") {
+          loginData[key] = String(value);
+        }
+      });
+      const verified = verifyTelegramLogin_(loginData, TELEGRAM_BOT_TOKEN);
+      payload = verified
+        ? { ok: true, user: verified }
+        : { ok: false, error: "telegram_login_invalid" };
+    }
+    else if (action === "submission") {
+      const submissionId = e?.parameter?.submission_id ? String(e.parameter.submission_id).trim() : "";
+      payload = getSubmissionPayload_(ss, submissionId);
+    }
+    else payload = { error: "Unknown action", action };
+
+    return output_(payload, callback);
+  } catch (err) {
+    return output_(
+      { error: String(err), stack: err?.stack ?? null },
+      e?.parameter?.callback ?? null
+    );
+  }
+}
+
+/***************
+ * POST (submit answers)
+ ***************/
+function doPost(e) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+
+  try {
+    // Apps Script WebApp обычно кладёт form fields в e.parameter,
+    // но на всякий случай поддержим e.postData.contents
+    const params = (e && e.parameter) ? e.parameter : {};
+    const action = params.action ? String(params.action) : "";
+
+    const raw = extractPayloadFromPost_(e, params);
+    if (!raw) throw new Error("Empty payload");
+
+    const payload = JSON.parse(raw);
+    logInfo_("doPost: received payload", {
+      action,
+      partial: !!payload?.partial,
+      submission_id: safe_(payload?.submission_id),
+      branch_id: safe_(payload?.branch_id),
+      branch_name: safe_(payload?.branch_name),
+    });
+
+    if (action === "send_message") {
+      const sendRes = sendTelegramMessageFromPayload_(ss, payload, { action });
+      logInfo_("doPost: send_message result", sendRes);
+      return text_("OK");
+    }
+
+    if (action !== "submit") {
+      return text_("OK");
+    }
+
+    // Обновляем/добавляем проверяющего
+    try {
+      upsertInspector_(ss, payload);
+    } catch (inspectorErr) {
+      logError_("doPost: upsertInspector failed", inspectorErr);
+    }
+
+    // Ensure output sheets exist & have headers
+    const shSub = getOrCreateSheet_(ss, SHEET_NAMES.submissions, SUBMISSIONS_HEADERS);
+    const shAns = getOrCreateSheet_(ss, SHEET_NAMES.answers, ANSWERS_HEADERS);
+
+    // Prepare answers rows (flat)
+    const flat = Array.isArray(payload.answers_rows)
+      ? payload.answers_rows
+      : (Array.isArray(payload.answers_flat) ? payload.answers_flat : []);
+
+    const shouldUploadInline = shouldUploadPhotosInline_(payload);
+    const driveUpload = shouldUploadInline
+      ? uploadAnswerPhotosToDrive_(ss, payload, flat)
+      : buildDeferredDriveUploadMeta_(flat, "inline_upload_disabled");
+    const effectiveFlat = driveUpload.flat;
+    logInfo_("doPost: drive upload meta", driveUpload.meta);
+
+    // Prepare values (one submission row)
+    const tg = payload.tg || {};
+    const meta = payload.meta || {};
+    const metaJson = mergeMetaJsonWith_(payload.meta_json, {
+      drive_upload: driveUpload.meta,
+    });
+    const tgUserId = safe_(payload.tg_user_id || payload.tg_id || tg.user_id || tg.id);
+
+    const subRow = [
+      safe_(payload.submission_id),
+      safe_(payload.submitted_at),
+      safe_(payload.fio),
+      safe_(payload.city),
+      safe_(payload.branch_id),
+      safe_(payload.branch_name),
+      safe_(payload.zone),
+      safe_(payload.inspection_area),
+      safe_(payload.percent),
+      safe_(payload.earned),
+      safe_(payload.max_score),
+      tgUserId,
+      metaJson || json_(meta),
+    ];
+
+    shSub.appendRow(subRow);
+
+    if (effectiveFlat.length) {
+      const rows = effectiveFlat.map(a => ({
+        submission_id: safe_(payload.submission_id),
+        submitted_at: safe_(payload.submitted_at),
+        fio: safe_(payload.fio),
+        city: safe_(payload.city),
+        branch_id: safe_(payload.branch_id),
+        branch_name: safe_(payload.branch_name),
+        section_code: safe_(a.section_code || a.section_id || ""),
+        section_title: safe_(a.section_title),
+        question_id: safe_(a.question_id),
+        critikal: safe_(a.critikal || (String(a.severity || "").toLowerCase() === "critical" ? "critical" : "")),
+        question_text: safe_(a.question_text),
+        severity: safe_(a.severity),
+        answer_key: safe_(a.answer_key || a.answer_value),
+        answer_text: safe_(a.answer_text || a.answer_label),
+        score_earned: safe_(a.score_earned),
+        score_max: safe_(a.score_max),
+        comment: safe_(a.comment),
+        photos_json: json_(a.photos),
+      }));
+
+      appendObjectsRowsByHeaders_(shAns, rows);
+    }
+
+    const shouldSendTelegram = !payload.partial && !payload.skip_telegram;
+    const tgSendRes = shouldSendTelegram
+      ? sendTelegramMessageFromPayload_(ss, payload, { action })
+      : { ok: false, info: "skip_partial" };
+    logInfo_("doPost: telegram send result", tgSendRes);
+    return text_("OK");
+
+  } catch (err) {
+    logError_("doPost: failed", err);
+    // Всё равно отдаём OK, чтобы iframe не ломал UX
+    return text_("OK");
+  }
+}
+
+/***************
+ * Helpers
+ ***************/
+function output_(data, callback) {
+  const json = JSON.stringify(data);
+
+  // JSONP (обходит CORS)
+  if (callback) {
+    return ContentService
+      .createTextOutput(`${callback}(${json});`)
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
+
+  // обычный JSON
+  return ContentService
+    .createTextOutput(json)
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function text_(s) {
+  return ContentService
+    .createTextOutput(String(s))
+    .setMimeType(ContentService.MimeType.TEXT);
+}
+
+function readSheetAsObjects_(ss, name) {
+  const sh = ss.getSheetByName(name);
+  if (!sh) return [];
+  const values = sh.getDataRange().getValues();
+  if (values.length < 2) return [];
+  const headers = values[0].map(h => String(h).trim());
+
+  return values.slice(1)
+    .filter(r => r.some(cell => String(cell).trim() !== ""))
+    .map(r => {
+      const obj = {};
+      headers.forEach((h, i) => obj[h] = r[i]);
+      return obj;
+    });
+}
+
+function readSheetAsKeyValue_(ss, name) {
+  const sh = ss.getSheetByName(name);
+  if (!sh) return {};
+  const values = sh.getDataRange().getValues();
+  const out = {};
+  for (let i = 1; i < values.length; i++) {
+    const key = String(values[i][0] ?? "").trim();
+    if (key) out[key] = values[i][1];
+  }
+  return out;
+}
+
+function getOrCreateSheet_(ss, name, headers) {
+  let sh = ss.getSheetByName(name);
+  if (!sh) sh = ss.insertSheet(name);
+
+  // Ensure header row exists and correct
+  const lastCol = Math.max(sh.getLastColumn(), headers.length);
+  const existing = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(v => String(v || "").trim());
+
+  const needRewrite =
+    existing.slice(0, headers.length).join("|") !== headers.join("|");
+
+  if (needRewrite) {
+    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sh.setFrozenRows(1);
+  }
+
+  return sh;
+}
+
+
+
+function processPendingAnswerPhotos_(limit) {
+  const maxRows = Number(limit) > 0 ? Number(limit) : 50;
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const shAns = ss.getSheetByName(SHEET_NAMES.answers);
+  if (!shAns) return { ok: false, status: "answers_sheet_missing", processed: 0, uploaded: 0, failed: 0 };
+
+  const range = shAns.getDataRange();
+  const values = range.getValues();
+  if (!values || values.length < 2) return { ok: true, status: "empty", processed: 0, uploaded: 0, failed: 0 };
+
+  const headers = values[0].map(h => String(h || "").trim());
+  const idx = {};
+  headers.forEach((h, i) => { idx[h] = i; });
+
+  const need = ["submission_id", "branch_id", "branch_name", "section_title", "photos_json"];
+  if (need.some(k => idx[k] === undefined)) {
+    return { ok: false, status: "headers_missing", reason: "Required headers not found", processed: 0, uploaded: 0, failed: 0 };
+  }
+
+  let processed = 0;
+  let uploaded = 0;
+  let failed = 0;
+
+  for (let r = 1; r < values.length; r += 1) {
+    if (processed >= maxRows) break;
+
+    const photosCell = values[r][idx.photos_json];
+    const photos = normalizePhotosList_(photosCell);
+    if (!photos.some(isDataUrlImage_)) continue;
+
+    processed += 1;
+    const payload = {
+      submission_id: safe_(values[r][idx.submission_id]),
+      branch_id: safe_(values[r][idx.branch_id]),
+      branch_name: safe_(values[r][idx.branch_name]),
+    };
+
+    const row = {
+      section_title: safe_(values[r][idx.section_title]),
+      photos,
+    };
+
+    const res = uploadAnswerPhotosToDrive_(ss, payload, [row]);
+    if (!res.meta || !res.meta.ok) {
+      failed += 1;
+      continue;
+    }
+
+    const nextPhotos = (res.flat && res.flat[0] && res.flat[0].photos) ? res.flat[0].photos : photos;
+    shAns.getRange(r + 1, idx.photos_json + 1).setValue(json_(nextPhotos));
+    uploaded += Number(res.meta.uploaded || 0);
+  }
+
+  return { ok: failed === 0, status: failed === 0 ? "processed" : "processed_with_errors", processed, uploaded, failed };
+}
+
+function safe_(v) {
+  if (v === null || v === undefined) return "";
+  // Apps Script любит boolean/number норм, оставим как есть
+  return v;
+}
+
+function normalizeHeaderKey_(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-]+/g, "_")
+    .replace(/[^a-zа-я0-9_]/g, "")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function json_(v) {
+  if (v === null || v === undefined) return "";
+  try { return JSON.stringify(v); } catch { return ""; }
+}
+
+function parseJsonObject_(value) {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function mergeMetaJsonWith_(metaJson, extra) {
+  const base = parseJsonObject_(metaJson);
+  const out = { ...base, ...(extra || {}) };
+  return json_(out);
+}
+
+function shouldUploadPhotosInline_(payload) {
+  const props = PropertiesService.getScriptProperties();
+  const modeRaw = String(props.getProperty("PHOTO_UPLOAD_MODE") || "").trim().toLowerCase();
+  const mode = modeRaw || "deferred";
+
+  if (mode === "inline") return true;
+  if (mode === "deferred") return false;
+
+  if (mode === "auto") {
+    return !payload?.partial;
+  }
+
+  return false;
+}
+
+function buildDeferredDriveUploadMeta_(flatRows, reason) {
+  return {
+    flat: flatRows,
+    meta: {
+      ok: true,
+      status: "deferred",
+      uploaded: 0,
+      failed: 0,
+      total: countPhotosInRows_(flatRows),
+      action_required: "Run processPendingAnswerPhotos_ from script owner account (or install a time trigger for it) to upload queued data URL photos.",
+      reason: String(reason || "deferred"),
+    },
+  };
+}
+
+function parseFormUrlEncoded_(s) {
+  const out = {};
+  String(s || "").split("&").forEach(pair => {
+    const idx = pair.indexOf("=");
+    const k = idx >= 0 ? pair.slice(0, idx) : pair;
+    const v = idx >= 0 ? pair.slice(idx + 1) : "";
+    if (!k) return;
+    out[decodeURIComponent(k)] = decodeURIComponent(String(v || "").replace(/\+/g, " "));
+  });
+  return out;
+}
+
+function extractPayloadFromPost_(e, params) {
+  let raw = params && params.payload ? String(params.payload) : "";
+  if (!raw && e && e.postData && e.postData.contents) {
+    const parsed = parseFormUrlEncoded_(String(e.postData.contents));
+    raw = parsed.payload ? String(parsed.payload) : "";
+  }
+  return raw;
+}
+
+function uploadAnswerPhotosToDrive_(ss, payload, flatRows) {
+  const rows = Array.isArray(flatRows) ? flatRows : [];
+
+  const resolver = resolveBranchDriveFolder_(ss, payload);
+  if (!resolver.ok || !resolver.folder) {
+    logInfo_("uploadAnswerPhotosToDrive: branch folder unresolved", resolver);
+    return {
+      flat: rows,
+      meta: {
+        ok: false,
+        status: resolver.status || "branch_folder_not_found",
+        reason: resolver.reason || "",
+        uploaded: 0,
+        total: countPhotosInRows_(rows),
+      },
+    };
+  }
+
+  const dateFolderName = formatDateFolderNameMsk_(new Date());
+  let dateFolder;
+  try {
+    dateFolder = ensureChildFolderByName_(resolver.folder, dateFolderName);
+  } catch (err) {
+    logError_("uploadAnswerPhotosToDrive: date folder create/open failed", err);
+    return {
+      flat: rows,
+      meta: {
+        ok: false,
+        status: "date_folder_access_error",
+        reason: String(err || ""),
+        uploaded: 0,
+        failed: 0,
+        total: countPhotosInRows_(rows),
+        branch_folder_id: resolver.folder.getId(),
+        branch_folder_url: resolver.folder.getUrl(),
+        date_folder_name: dateFolderName,
+      },
+    };
+  }
+
+  if (!rows.length) {
+    return {
+      flat: rows,
+      meta: {
+        ok: true,
+        status: "no_answers_rows",
+        uploaded: 0,
+        total: 0,
+        branch_folder_id: resolver.folder.getId(),
+        branch_folder_url: resolver.folder.getUrl(),
+        date_folder_id: dateFolder.getId(),
+        date_folder_url: dateFolder.getUrl(),
+        date_folder_name: dateFolderName,
+      },
+    };
+  }
+
+  let uploaded = 0;
+  let failed = 0;
+  let total = 0;
+
+  const outRows = rows.map((row, rowIdx) => {
+    const photos = normalizePhotosList_(row?.photos);
+    if (!photos.length) return row;
+
+    const sectionTitle = safe_(row?.section_title || row?.section || row?.zone_room || "Общая");
+    const zoneFolder = ensureChildFolderByName_(dateFolder, sanitizeDriveName_(sectionTitle || "Общая"));
+
+    const nextPhotos = [];
+    photos.forEach((photo, photoIdx) => {
+      total += 1;
+      const src = String(photo || "").trim();
+      if (!src) return;
+
+      if (!isDataUrlImage_(src)) {
+        nextPhotos.push(src);
+        return;
+      }
+
+      try {
+        const decoded = decodeImageDataUrl_(src);
+        if (!decoded || !decoded.bytes || !decoded.bytes.length) {
+          failed += 1;
+          return;
+        }
+
+        const ext = mimeToFileExt_(decoded.mimeType);
+        const fileName = buildUploadedPhotoName_(payload, row, rowIdx, photoIdx, ext);
+        const blob = Utilities.newBlob(decoded.bytes, decoded.mimeType, fileName);
+        const file = zoneFolder.createFile(blob);
+        nextPhotos.push(file.getUrl());
+        uploaded += 1;
+      } catch (err) {
+        logError_("uploadAnswerPhotosToDrive: photo upload failed", err);
+        failed += 1;
+      }
+    });
+
+    return {
+      ...row,
+      photos: nextPhotos,
+    };
+  });
+
+  return {
+    flat: outRows,
+    meta: {
+      ok: failed === 0,
+      status: failed === 0 ? "uploaded" : (uploaded > 0 ? "partially_uploaded" : "upload_failed"),
+      uploaded,
+      failed,
+      total,
+      branch_folder_id: resolver.folder.getId(),
+      branch_folder_url: resolver.folder.getUrl(),
+      date_folder_id: dateFolder.getId(),
+      date_folder_url: dateFolder.getUrl(),
+      date_folder_name: dateFolderName,
+    },
+  };
+}
+
+function countPhotosInRows_(rows) {
+  return (rows || []).reduce((acc, row) => acc + normalizePhotosList_(row?.photos).length, 0);
+}
+
+function normalizePhotosList_(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (!value) return [];
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean);
+    } catch (_) {}
+    return [value];
+  }
+  return [];
+}
+
+function resolveBranchDriveFolder_(ss, payload) {
+  const directFolder = resolveDirectDriveFolder_(payload);
+  if (directFolder && directFolder.ok) return directFolder;
+
+  const branchesSheet = ss.getSheetByName(SHEET_NAMES.branches);
+  if (!branchesSheet) {
+    return directFolder && !directFolder.ok
+      ? directFolder
+      : { ok: false, status: "branches_sheet_missing", reason: "Sheet 'Адреса' not found" };
+  }
+
+  const found = findBranchRowData_(branchesSheet, payload);
+  if (!found) {
+    return { ok: false, status: "branch_not_found", reason: "Branch row not found" };
+  }
+
+  const folderAliases = [
+    "ссылка_на_папку", "ссылка на папку", "папка", "папка_drive", "папка drive", "диск",
+    "google_drive", "google drive", "gdrive", "google_disk", "google disk",
+    "посилання_на_папку", "папка_гугл", "папка_google",
+    "folder_url", "folder_link", "drive_folder_url", "drive_folder", "folder_id",
+    "google_drive_folder", "gdrive_folder", "drive_folder_id", "drive_id", "folder",
+  ];
+
+  const folderUrl = String(getByKeys_(found.obj, folderAliases) || "").trim();
+  const richFolderUrl = extractFolderUrlFromRichText_(branchesSheet, found.rowIndex, found.headerIndexMap, folderAliases);
+
+  const fallbackCell = extractFolderCellByHeaderGuess_(branchesSheet, found.rowIndex, found.headerIndexMap);
+  const guessedFolderUrl = extractDriveFolderId_(fallbackCell) ? fallbackCell : "";
+
+  const folderId = extractDriveFolderId_(folderUrl) || extractDriveFolderId_(richFolderUrl) || extractDriveFolderId_(guessedFolderUrl);
+  if (!folderId) {
+    return {
+      ok: false,
+      status: "folder_link_missing",
+      reason: "Folder link not found in branch row",
+      debug: {
+        row_index: found.rowIndex,
+        folder_url_raw: folderUrl,
+        folder_url_rich_text: richFolderUrl,
+        folder_url_guessed: guessedFolderUrl,
+      },
+    };
+  }
+
+  try {
+    const folder = DriveApp.getFolderById(folderId);
+    return { ok: true, folder, status: "resolved", folder_id: folderId };
+  } catch (err) {
+    logError_("resolveBranchDriveFolder: DriveApp.getFolderById failed", err);
+    const scopeIssue = getDriveScopeIssue_(err);
+    return {
+      ok: false,
+      status: scopeIssue ? "drive_scope_missing" : "folder_access_error",
+      reason: String(err || ""),
+      folder_id: folderId,
+      action_required: scopeIssue
+        ? "Run processPendingAnswerPhotos_ from script owner account (or install a time trigger for it) so uploads execute with owner Drive permissions."
+        : "Check folder access rights and shared permissions for script account.",
+    };
+  }
+}
+
+function resolveDirectDriveFolder_(payload) {
+  const fromPayload = [
+    payload?.drive_folder_id,
+    payload?.drive_folder_url,
+    payload?.folder_id,
+    payload?.folder_url,
+  ];
+
+  const props = PropertiesService.getScriptProperties();
+  const fromProps = [
+    props.getProperty("DRIVE_UPLOAD_FOLDER_ID"),
+    props.getProperty("DEFAULT_DRIVE_FOLDER_ID"),
+    props.getProperty("DRIVE_FOLDER_ID"),
+    props.getProperty("DRIVE_UPLOAD_FOLDER_URL"),
+  ];
+
+  const source = [...fromPayload, ...fromProps]
+    .map(v => String(v || "").trim())
+    .find(Boolean);
+
+  if (!source) return null;
+
+  const folderId = extractDriveFolderId_(source);
+  if (!folderId) {
+    return {
+      ok: false,
+      status: "direct_folder_invalid",
+      reason: "Direct Drive folder value is set, but folder id is invalid",
+      raw: source,
+    };
+  }
+
+  try {
+    const folder = DriveApp.getFolderById(folderId);
+    return { ok: true, folder, status: "resolved_direct", folder_id: folderId };
+  } catch (err) {
+    logError_("resolveDirectDriveFolder: DriveApp.getFolderById failed", err);
+    const scopeIssue = getDriveScopeIssue_(err);
+    return {
+      ok: false,
+      status: scopeIssue ? "drive_scope_missing" : "direct_folder_access_error",
+      reason: String(err || ""),
+      folder_id: folderId,
+      action_required: scopeIssue
+        ? "Run processPendingAnswerPhotos_ from script owner account (or install a time trigger for it) so uploads execute with owner Drive permissions."
+        : "Check folder access rights and shared permissions for script account.",
+    };
+  }
+}
+
+function getDriveScopeIssue_(err) {
+  const text = String(err && (err.message || err.stack) ? (err.message || err.stack) : err || "");
+  if (!text) return false;
+  return /DriveApp\.getFolderById/i.test(text)
+    && /(auth\/drive|auth\/drive\.readonly|нет разрешения|permission)/i.test(text);
+}
+
+function findBranchRowData_(branchesSheet, payload) {
+  const range = branchesSheet.getDataRange();
+  const values = range.getValues();
+  if (!values || values.length < 2) return null;
+
+  const headers = values[0].map(h => String(h || "").trim());
+  const normalizedHeaders = headers.map(normalizeHeaderKey_);
+  const headerIndexMap = {};
+  normalizedHeaders.forEach((h, idx) => {
+    if (!h) return;
+    if (headerIndexMap[h] === undefined) headerIndexMap[h] = idx;
+  });
+
+  const branchId = String(payload?.branch_id || "").trim();
+  const branchName = String(payload?.branch_name || "").trim();
+
+  const branchIdKeys = ["branch_id", "id", "branchid", "код", "код_филиала", "код_адреса"];
+  const branchNameKeys = ["branch_name", "address", "addr", "name", "title", "адрес", "название", "филиал", "точка"];
+
+  for (let i = 1; i < values.length; i += 1) {
+    const row = values[i] || [];
+    if (!row.some(cell => String(cell || "").trim() !== "")) continue;
+
+    const obj = {};
+    headers.forEach((h, idx) => {
+      obj[h] = row[idx];
+    });
+
+    const rowBranchId = String(getByKeys_(obj, branchIdKeys) || "").trim();
+    if (branchId && rowBranchId === branchId) {
+      return { obj, rowIndex: i + 1, headerIndexMap };
+    }
+  }
+
+  if (branchName) {
+    const target = normalizeTextKey_(branchName);
+    for (let i = 1; i < values.length; i += 1) {
+      const row = values[i] || [];
+      if (!row.some(cell => String(cell || "").trim() !== "")) continue;
+
+      const obj = {};
+      headers.forEach((h, idx) => {
+        obj[h] = row[idx];
+      });
+
+      const label = String(getByKeys_(obj, branchNameKeys) || "").trim();
+      if (label && normalizeTextKey_(label) === target) {
+        return { obj, rowIndex: i + 1, headerIndexMap };
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractFolderUrlFromRichText_(sheet, rowIndex, headerIndexMap, folderKeys) {
+  if (!sheet || !rowIndex || !headerIndexMap) return "";
+  const idx = findHeaderIndexByAliases_(headerIndexMap, folderKeys);
+  if (idx < 0) return "";
+
+  try {
+    const richText = sheet.getRange(rowIndex, idx + 1).getRichTextValue();
+    if (!richText) return "";
+
+    const directLink = richText.getLinkUrl();
+    if (directLink) return String(directLink).trim();
+
+    const runs = richText.getRuns ? richText.getRuns() : [];
+    for (let i = 0; i < (runs || []).length; i += 1) {
+      const run = runs[i];
+      const runLink = run?.getLinkUrl ? run.getLinkUrl() : "";
+      if (runLink) return String(runLink).trim();
+    }
+  } catch (_) {}
+
+  return "";
+}
+
+
+function extractFolderCellByHeaderGuess_(sheet, rowIndex, headerIndexMap) {
+  if (!sheet || !rowIndex || !headerIndexMap) return "";
+  const keys = Object.keys(headerIndexMap || {});
+  for (let i = 0; i < keys.length; i += 1) {
+    const key = keys[i];
+    if (!/(папк|folder|drive|диск)/i.test(key)) continue;
+    const idx = headerIndexMap[key];
+    if (idx === undefined || idx < 0) continue;
+    const value = sheet.getRange(rowIndex, idx + 1).getDisplayValue();
+    if (value && extractDriveFolderId_(value)) return String(value).trim();
+
+    const rich = extractFolderUrlFromRichText_(sheet, rowIndex, headerIndexMap, [key]);
+    if (rich && extractDriveFolderId_(rich)) return String(rich).trim();
+  }
+  return "";
+}
+
+function findHeaderIndexByAliases_(headerIndexMap, aliases) {
+  const list = Array.isArray(aliases) ? aliases : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const key = normalizeHeaderKey_(list[i]);
+    if (!key) continue;
+    if (headerIndexMap[key] !== undefined) return headerIndexMap[key];
+  }
+  return -1;
+}
+
+function logInfo_(msg, data) {
+  const text = `[INFO] ${msg}${data !== undefined ? ` | ${json_(data)}` : ""}`;
+  try {
+    Logger.log(text);
+  } catch (_) {}
+  appendLogRow_("INFO", msg, data !== undefined ? data : "");
+}
+
+function logError_(msg, err) {
+  const text = err && err.stack ? String(err.stack) : String(err || "");
+  try {
+    Logger.log(`[ERROR] ${msg}${text ? ` | ${text}` : ""}`);
+  } catch (_) {}
+  appendLogRow_("ERROR", msg, text);
+}
+
+function appendLogRow_(level, message, data) {
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sh = getOrCreateSheet_(ss, SHEET_NAMES.logs, LOG_HEADERS);
+    sh.appendRow([
+      Utilities.formatDate(new Date(), "Europe/Moscow", "yyyy-MM-dd HH:mm:ss"),
+      String(level || ""),
+      String(message || ""),
+      typeof data === "string" ? data : json_(data),
+    ]);
+  } catch (_) {}
+}
+
+function getByKeys_(obj, keys) {
+  const map = {};
+  Object.keys(obj || {}).forEach(k => {
+    map[normalizeHeaderKey_(k)] = obj[k];
+  });
+  for (let i = 0; i < (keys || []).length; i += 1) {
+    const key = normalizeHeaderKey_(keys[i]);
+    if (map[key] !== undefined && map[key] !== null && String(map[key]).trim() !== "") {
+      return map[key];
+    }
+  }
+  return "";
+}
+
+function normalizeTextKey_(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractDriveFolderId_(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+
+  const m1 = raw.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (m1 && m1[1]) return m1[1];
+
+  const m2 = raw.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (m2 && m2[1]) return m2[1];
+
+  if (/^[a-zA-Z0-9_-]{10,}$/.test(raw)) return raw;
+  return "";
+}
+
+function ensureChildFolderByName_(parentFolder, name) {
+  const cleanName = sanitizeDriveName_(name || "Проверка");
+  const existing = parentFolder.getFoldersByName(cleanName);
+  if (existing.hasNext()) return existing.next();
+  return parentFolder.createFolder(cleanName);
+}
+
+function sanitizeDriveName_(value) {
+  const cleaned = String(value || "")
+    .replace(/[\\/:*?"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "Без названия";
+}
+
+function formatDateFolderNameMsk_(date) {
+  return Utilities.formatDate(date || new Date(), "Europe/Moscow", "yyyy-MM-dd");
+}
+
+function isDataUrlImage_(value) {
+  return /^data:image\//i.test(String(value || ""));
+}
+
+function decodeImageDataUrl_(dataUrl) {
+  const m = String(dataUrl || "").match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i);
+  if (!m) return null;
+  const mimeType = m[1].toLowerCase();
+  const base64 = m[2] || "";
+  if (!base64) return null;
+  return {
+    mimeType,
+    bytes: Utilities.base64Decode(base64),
+  };
+}
+
+function mimeToFileExt_(mimeType) {
+  const mime = String(mimeType || "").toLowerCase();
+  if (mime === "image/jpeg" || mime === "image/jpg") return "jpg";
+  if (mime === "image/png") return "png";
+  if (mime === "image/webp") return "webp";
+  if (mime === "image/gif") return "gif";
+  return "bin";
+}
+
+function buildUploadedPhotoName_(payload, row, rowIdx, photoIdx, ext) {
+  const sid = sanitizeDriveName_(payload?.submission_id || "submission");
+  const qid = sanitizeDriveName_(row?.question_id || `q_${rowIdx + 1}`);
+  const section = sanitizeDriveName_(row?.section_code || row?.section_id || "section");
+  const idx = photoIdx + 1;
+  return `${sid}_${section}_${qid}_${idx}.${ext || "bin"}`;
+}
+
+function extractTelegramUserId_(payload, initData) {
+  const direct = safe_(payload?.tg_user_id || payload?.tg_id || payload?.tg?.user_id || payload?.tg?.id || "");
+  if (direct !== null && direct !== undefined && String(direct).trim() !== "") return direct;
+
+  if (!initData) return "";
+  try {
+    const parsed = parseInitData_(initData);
+    const userRaw = parsed?.user;
+    if (!userRaw) return "";
+    const user = JSON.parse(userRaw);
+    return user?.id || "";
+  } catch (err) {
+    return "";
+  }
+}
+
+function sendTelegramMessageFromPayload_(ss, payload, { action } = {}) {
+  if (!TELEGRAM_BOT_TOKEN) {
+    return { ok: false, info: "bot_token_missing" };
+  }
+
+  const initData = safe_(payload?.init_data || payload?.initData || "");
+  const tgUser = verifyInitData_(initData, TELEGRAM_BOT_TOKEN);
+  let chatId = tgUser?.id || "";
+  let infoHint = "";
+  if (!chatId) {
+    const fallbackId = extractTelegramUserId_(payload, initData);
+    if (fallbackId) {
+      chatId = fallbackId;
+      infoHint = "init_data_invalid_fallback";
+    } else {
+      return { ok: false, info: tgUser ? "tg_user_id_missing" : "init_data_invalid" };
+    }
+  }
+
+  const text = buildTelegramMessageText_(payload, { action });
+  if (!text) {
+    return { ok: false, info: "message_text_empty" };
+  }
+
+  const sendRes = sendTelegramMessage_(chatId, text);
+  if (sendRes.ok && infoHint) {
+    return { ...sendRes, info: infoHint };
+  }
+  return sendRes;
+}
+
+function buildTelegramMessageText_(payload, { action } = {}) {
+  const direct = safe_(payload?.message_text || payload?.text || "");
+  if (direct) return String(direct);
+
+  const zoneRaw = String(payload?.zone || "").toLowerCase();
+  const zoneText = (
+    zoneRaw === "green" ? "зелёную зону" :
+    zoneRaw === "yellow" ? "жёлтую зону" :
+    zoneRaw === "red" ? "красную зону" :
+    zoneRaw ? "серую зону" : ""
+  );
+  const link = safe_(payload?.result_link || payload?.link || "");
+  const linkText = link ? String(link) : "";
+
+  let text = zoneText
+    ? `Проверка завершена. Вы прошли на ${zoneText}.`
+    : "Проверка завершена.";
+  if (linkText) text += ` Ссылка на проверку: ${linkText}`;
+  if (!text && action) text = `Проверка завершена (${action}).`;
+  return text;
+}
+
+function sendTelegramMessage_(chatId, text) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+  const payload = {
+    chat_id: chatId,
+    text: String(text || ""),
+    parse_mode: "HTML",
+    disable_web_page_preview: false,
+  };
+
+  try {
+    const resp = UrlFetchApp.fetch(url, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+    const status = resp.getResponseCode();
+    const body = resp.getContentText();
+    const ok = status >= 200 && status < 300;
+    return { ok, info: ok ? "sent" : `status_${status}`, response: body };
+  } catch (err) {
+    return { ok: false, info: String(err) };
+  }
+}
+
+function verifyInitData_(initData, botToken) {
+  if (!initData || !botToken) return null;
+
+  const data = parseInitData_(initData);
+  if (!data || !data.hash) return null;
+
+  const checkString = buildDataCheckString_(data);
+  const secretKey = Utilities.computeHmacSha256Signature("WebAppData", botToken);
+  const checkBytes = Utilities.newBlob(checkString).getBytes();
+  const hash = Utilities.computeHmacSha256Signature(checkBytes, secretKey);
+  const hex = bytesToHex_(hash);
+
+  if (hex !== String(data.hash).toLowerCase()) return null;
+
+  try {
+    return data.user ? JSON.parse(data.user) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function verifyTelegramLogin_(loginData, botToken) {
+  if (!botToken || !loginData || !loginData.hash) return null;
+  const checkString = buildDataCheckString_(loginData);
+  const secret = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, botToken);
+  const hash = Utilities.computeHmacSha256Signature(checkString, secret);
+  const hex = bytesToHex_(hash);
+  if (hex !== String(loginData.hash).toLowerCase()) return null;
+  return loginData;
+}
+
+function parseInitData_(initData) {
+  const out = {};
+  String(initData || "").split("&").forEach(pair => {
+    const idx = pair.indexOf("=");
+    const key = idx >= 0 ? pair.slice(0, idx) : pair;
+    const val = idx >= 0 ? pair.slice(idx + 1) : "";
+    if (!key) return;
+    out[decodeURIComponent(key)] = decodeURIComponent(String(val || "").replace(/\+/g, " "));
+  });
+  return out;
+}
+
+function buildDataCheckString_(data) {
+  const keys = Object.keys(data || {}).filter(k => k !== "hash").sort();
+  return keys.map(key => `${key}=${data[key]}`).join("\n");
+}
+
+function bytesToHex_(bytes) {
+  return (bytes || [])
+    .map(b => {
+      const v = b < 0 ? b + 256 : b;
+      return ("0" + v.toString(16)).slice(-2);
+    })
+    .join("");
+}
+
+function escapeHtml_(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/***************
+ * Submission fetch helpers (for shareable result links)
+ ***************/
+function getMySubmissionsPayload_(ss, tgUserId, limitRaw) {
+  const id = String(safe_(tgUserId)).trim();
+  if (!id) return { ok: false, error: "No tg_user_id", items: [] };
+
+  const sh = ss.getSheetByName(SHEET_NAMES.submissions);
+  if (!sh) return { ok: true, tg_user_id: id, items: [], total: 0 };
+
+  const values = sh.getDataRange().getValues();
+  if (values.length < 2) return { ok: true, tg_user_id: id, items: [], total: 0 };
+
+  const headers = values[0].map(h => String(h).trim());
+  const normalizedHeaders = headers.map(normalizeHeaderKey_);
+  const normalizedMap = {};
+  normalizedHeaders.forEach((h, i) => { if (h) normalizedMap[h] = i; });
+
+  const idCol = normalizedMap.tg_user_id ?? headers.indexOf("tg_user_id");
+  if (idCol < 0) return { ok: false, error: "tg_user_id column missing", items: [] };
+
+  const parsedLimit = Number.parseInt(String(limitRaw || ""), 10);
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : MY_SUBMISSIONS_DEFAULT_LIMIT;
+
+  const items = [];
+  let total = 0;
+
+  for (let i = values.length - 1; i >= 1; i -= 1) {
+    const rowId = String(safe_(values[i][idCol])).trim();
+    if (!rowId || rowId !== id) continue;
+    total += 1;
+    if (items.length >= limit) continue;
+    const obj = {};
+    headers.forEach((h, j) => {
+      const value = values[i][j];
+      const normKey = normalizedHeaders[j];
+      if (h) obj[h] = value;
+      if (normKey && obj[normKey] === undefined) obj[normKey] = value;
+    });
+    items.push(obj);
+  }
+
+  return {
+    ok: true,
+    tg_user_id: id,
+    total,
+    items,
+    meta: { updatedAt: new Date().toISOString() }
+  };
+}
+
+function getSubmissionPayload_(ss, submissionId) {
+  if (!submissionId) return { ok: false, error: "No submission_id" };
+
+  const sub = findRowById_(ss.getSheetByName(SHEET_NAMES.submissions), "submission_id", submissionId);
+  if (!sub) return { ok: false, error: "Submission not found", submission_id: submissionId };
+
+  const answers = findRowsById_(ss.getSheetByName(SHEET_NAMES.answers), "submission_id", submissionId);
+  const answersNormalized = normalizeAnswersRows_(answers);
+  const issues = buildIssuesFromAnswerRows_(answersNormalized);
+
+  return {
+    ok: true,
+    submission_id: submissionId,
+    submission: sub,
+    answers,
+    answers_normalized: answersNormalized,
+    issues,
+    meta: { updatedAt: new Date().toISOString() }
+  };
+}
+
+function normalizeAnswersRows_(rows) {
+  return (rows || []).map(normalizeAnswerRow_);
+}
+
+function normalizeAnswerRow_(row) {
+  const scoreEarned = toNumberOrEmpty_(row?.score_earned);
+  const scoreMax = toNumberOrEmpty_(row?.score_max);
+  const hasScores = scoreEarned !== "" && scoreMax !== "";
+  const maxPositive = hasScores && Number(scoreMax) > 0;
+  const isIssue = maxPositive ? Number(scoreEarned) < Number(scoreMax) : false;
+
+  return {
+    ...row,
+    score_earned: scoreEarned,
+    score_max: scoreMax,
+    photos: parsePhotosJson_(row?.photos_json),
+    is_issue: isIssue,
+  };
+}
+
+function toNumberOrEmpty_(value) {
+  if (value === "" || value === null || value === undefined) return "";
+  const num = Number(String(value).replace(",", "."));
+  return Number.isFinite(num) ? num : "";
+}
+
+function parsePhotosJson_(value) {
+  const raw = safe_(value);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.map(safe_).filter(Boolean);
+  } catch (_) {}
+  return [raw];
+}
+
+function buildIssuesFromAnswerRows_(rows) {
+  const issues = [];
+  (rows || []).forEach(row => {
+    if (!row?.is_issue) return;
+    issues.push({
+      qid: safe_(row.question_id),
+      title: safe_(row.question_text),
+      sectionTitle: safe_(row.section_title),
+      severity: safe_(row.severity) || "noncritical",
+      score: row.score_earned,
+      score_earned: row.score_earned,
+      score_max: row.score_max,
+      comment: safe_(row.comment),
+      photos: row.photos || [],
+    });
+  });
+  return issues;
+}
+
+function findRowById_(sh, idHeader, idValue) {
+  if (!sh) return null;
+  const values = sh.getDataRange().getValues();
+  if (values.length < 2) return null;
+
+  const headers = values[0].map(h => String(h).trim());
+  const idCol = headers.indexOf(idHeader);
+  if (idCol < 0) return null;
+
+  for (let i = 1; i < values.length; i++) {
+    if (String(values[i][idCol] || "").trim() === idValue) {
+      const obj = {};
+      headers.forEach((h, j) => obj[h] = values[i][j]);
+      return obj;
+    }
+  }
+  return null;
+}
+
+function findRowsById_(sh, idHeader, idValue) {
+  if (!sh) return [];
+  const values = sh.getDataRange().getValues();
+  if (values.length < 2) return [];
+
+  const headers = values[0].map(h => String(h).trim());
+  const idCol = headers.indexOf(idHeader);
+  if (idCol < 0) return [];
+
+  const out = [];
+  for (let i = 1; i < values.length; i++) {
+    if (String(values[i][idCol] || "").trim() === idValue) {
+      const obj = {};
+      headers.forEach((h, j) => obj[h] = values[i][j]);
+      out.push(obj);
+    }
+  }
+  return out;
+}
+
+function getHeaderMap_(sh) {
+  const lastCol = sh.getLastColumn();
+  if (lastCol === 0) return {};
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0]
+    .map(h => String(h || "").trim());
+  const map = {};
+  headers.forEach((h, i) => { if (h) map[h] = i + 1; }); // 1-based
+  return map;
+}
+
+function appendObjectRowByHeaders_(sh, obj) {
+  const map = getHeaderMap_(sh);
+  const lastCol = sh.getLastColumn();
+  const row = new Array(lastCol).fill("");
+
+  Object.keys(obj || {}).forEach(key => {
+    const col = map[key];
+    if (col) row[col - 1] = obj[key];
+  });
+
+  sh.appendRow(row);
+}
+
+function appendObjectsRowsByHeaders_(sh, objects) {
+  if (!objects || !objects.length) return;
+
+  const map = getHeaderMap_(sh);
+  const lastCol = sh.getLastColumn();
+
+  const rows = objects.map(obj => {
+    const row = new Array(lastCol).fill("");
+    Object.keys(obj || {}).forEach(key => {
+      const col = map[key];
+      if (col) row[col - 1] = obj[key];
+    });
+    return row;
+  });
+
+  sh.getRange(sh.getLastRow() + 1, 1, rows.length, lastCol).setValues(rows);
+}
+
+function upsertInspector_(ss, payload) {
+  const sh = getOrCreateSheet_(ss, SHEET_NAMES.inspectors, INSPECTORS_HEADERS);
+
+  const tg = payload.tg || {};
+  const tgUserId = safe_(payload.tg_user_id || payload.tg_id || tg.user_id || tg.id);
+  const fio = safe_(payload.fio || payload.tg_name || tg.name || "");
+
+  if (!tgUserId) return;
+
+  const now = new Date().toISOString();
+  const headerMap = getHeaderMap_(sh);
+
+  const idCol = headerMap["tg_user_id"];
+  if (!idCol) return;
+
+  const lastRow = sh.getLastRow();
+  let foundRow = 0;
+
+  if (lastRow >= 2) {
+    const ids = sh.getRange(2, idCol, lastRow - 1, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0] || "").trim() === String(tgUserId).trim()) {
+        foundRow = i + 2;
+        break;
+      }
+    }
+  }
+
+  const record = {
+    tg_user_id: tgUserId,
+    fio: fio,
+    tg_username: safe_(payload.tg_username || tg.username),
+    tg_first_name: safe_(payload.tg_first_name || tg.first_name),
+    tg_last_name: safe_(payload.tg_last_name || tg.last_name),
+    tg_name: safe_(payload.tg_name || tg.name || [tg.first_name, tg.last_name].filter(Boolean).join(" ").trim()),
+    updated_at: now,
+  };
+
+  if (!foundRow) {
+    appendObjectRowByHeaders_(sh, record);
+  } else {
+    const lastCol = sh.getLastColumn();
+    const existingVals = sh.getRange(foundRow, 1, 1, lastCol).getValues()[0];
+    const existing = {};
+    Object.keys(headerMap).forEach(key => {
+      const col = headerMap[key];
+      existing[key] = col ? existingVals[col - 1] : "";
+    });
+
+    let changed = false;
+    Object.keys(record).forEach(key => {
+      if (key === "updated_at") return;
+      const col = headerMap[key];
+      if (!col) return;
+
+      const nextVal = record[key];
+      if (nextVal === "" || nextVal === null || nextVal === undefined) return;
+
+      const prevVal = existing[key];
+      if (String(prevVal ?? "") === String(nextVal ?? "")) return;
+
+      sh.getRange(foundRow, col).setValue(nextVal);
+      changed = true;
+    });
+
+    if (changed && headerMap.updated_at) {
+      sh.getRange(foundRow, headerMap.updated_at).setValue(now);
+    }
+  }
+}

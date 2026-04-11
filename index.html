@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Checklist</title>
+
+  <!-- Telegram WebApp -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ===== App root ===== -->
+  <div id="app" class="muted"></div>
+
+  <!-- ===== Image modal ===== -->
+  <div id="imgModal" class="imgModal modalOverlay" aria-hidden="true">
+    <div class="imgModalInner">
+      <button id="imgClose" class="imgModalClose">×</button>
+
+      <div class="imgModalHeader">
+        <div id="imgCaption" class="imgModalTitle"></div>
+      </div>
+
+      <img id="imgModalImg" class="imgModalImg" src="" alt="" />
+    </div>
+  </div>
+
+  <!-- ===== Hidden submit (POST to Apps Script) ===== -->
+  <iframe
+    name="submitFrame"
+    id="submitFrame"
+    style="display:none"
+  ></iframe>
+
+  <form
+    id="submitForm"
+    method="POST"
+    target="submitFrame"
+    action=""
+    style="display:none"
+  >
+    <!-- IDs are used by app.js; names are used by Apps Script -->
+    <input type="hidden" id="submitAction" name="action" value="submit" />
+    <input type="hidden" name="payload" id="submitPayload" />
+    <!-- Optional: request postMessage response from Apps Script (used for result_id/share links) -->
+    <input type="hidden" id="submitReturn" name="return" value="" />
+  </form>
+
+  <!-- ===== Scripts ===== -->
+  <script src="config.js"></script>
+
+  <script src="core/utils.js"></script>
+  <script src="core/api.js"></script>
+  <script src="core/state.js"></script>
+
+  <script src="ui/components.js"></script>
+  <script src="ui/templates.js"></script>
+  <script src="ui/screens.js"></script>
+
+  <script src="app.js"></script>
+
+</body>
+</html>
