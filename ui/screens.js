@@ -2876,13 +2876,15 @@
     return false;
   }
 
-  function buildAnswersRows(submissionId, submittedAt) {
+  function buildAnswersRows(submissionId, submittedAt, opts = {}) {
     const rows = [];
     const sections = activeSections(DATA.sections);
     const { branchName } = getBranchMeta();
     const checker = getCheckerMeta();
+    const targetSectionId = norm(opts?.sectionId || "");
 
     sections.forEach(section => {
+      if (targetSectionId && norm(section.id) !== targetSectionId) return;
       if (!hasAnyAnsweredQuestionInSection(section.id)) return;
       const qs = questionsForSection(DATA.checklist, section.id);
       qs.forEach(q => {
@@ -3045,6 +3047,7 @@
 
     const checker = getCheckerMeta();
     const { branchName } = getBranchMeta();
+    const answers_rows = buildAnswersRows(submissionId || "", ts, { sectionId });
 
     const payload = {
       action: "submit",
@@ -3080,6 +3083,8 @@
       has_critical: result.hasCritical,
 
       issues: result.issues,
+      answers_rows,
+      answers_rows_count: answers_rows.length,
       answers: { single, single_labels, checkbox, checkbox_labels, number, number_labels },
       meta: {
         app_version: (typeof APP_VERSION !== "undefined" ? APP_VERSION : ""),
