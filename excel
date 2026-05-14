@@ -189,11 +189,18 @@ function doPost(e) {
     const flat = Array.isArray(payload.answers_rows)
       ? payload.answers_rows
       : (Array.isArray(payload.answers_flat) ? payload.answers_flat : []);
+    const deduped = reuseExistingUploadedAnswerPhotos_(shAns, payload, flat);
 
     const shouldUploadInline = shouldUploadPhotosInline_(payload);
     const driveUpload = shouldUploadInline
-      ? uploadAnswerPhotosToDrive_(ss, payload, flat)
-      : buildDeferredDriveUploadMeta_(flat, "inline_upload_disabled");
+      ? uploadAnswerPhotosToDrive_(ss, payload, deduped.rows)
+      : buildDeferredDriveUploadMeta_(deduped.rows, "inline_upload_disabled");
+    if (deduped.reused > 0) {
+      driveUpload.meta = {
+        ...(driveUpload.meta || {}),
+        reused_existing_photos: deduped.reused,
+      };
+    }
     const effectiveFlat = driveUpload.flat;
     logInfo_("doPost: drive upload meta", driveUpload.meta);
 
@@ -617,6 +624,71 @@ function normalizePhotosList_(value) {
     return [value];
   }
   return [];
+}
+
+function reuseExistingUploadedAnswerPhotos_(answersSheet, payload, flatRows) {
+  const rows = Array.isArray(flatRows) ? flatRows : [];
+  const submissionId = String(payload?.submission_id || "").trim();
+  if (!answersSheet || !submissionId || !rows.length) return { rows, reused: 0 };
+
+  const hasInlinePhotos = rows.some(row => normalizePhotosList_(row?.photos).some(isDataUrlImage_));
+  if (!hasInlinePhotos) return { rows, reused: 0 };
+
+  const range = answersSheet.getDataRange();
+  const values = range.getValues();
+  if (!values || values.length < 2) return { rows, reused: 0 };
+
+  const headers = values[0].map(h => String(h || "").trim());
+  const idx = {};
+  headers.forEach((h, i) => { if (h) idx[h] = i; });
+
+  if (idx.submission_id === undefined || idx.question_id === undefined || idx.photos_json === undefined) {
+    return { rows, reused: 0 };
+  }
+
+  const existingByQuestion = {};
+  for (let r = 1; r < values.length; r += 1) {
+    if (String(values[r][idx.submission_id] || "").trim() !== submissionId) continue;
+
+    const photos = normalizePhotosList_(values[r][idx.photos_json]).filter(p => !isDataUrlImage_(p));
+    if (!photos.length) continue;
+
+    const key = answerPhotoDedupeKey_({
+      section_code: idx.section_code === undefined ? "" : values[r][idx.section_code],
+      section_title: idx.section_title === undefined ? "" : values[r][idx.section_title],
+      question_id: values[r][idx.question_id],
+    });
+    if (key && !existingByQuestion[key]) existingByQuestion[key] = photos;
+  }
+
+  let reused = 0;
+  const nextRows = rows.map(row => {
+    const photos = normalizePhotosList_(row?.photos);
+    const dataPhotos = photos.filter(isDataUrlImage_);
+    if (!dataPhotos.length) return row;
+
+    const key = answerPhotoDedupeKey_(row);
+    const existing = key ? existingByQuestion[key] : null;
+    if (!existing || !existing.length) return row;
+
+    const nonDataPhotos = photos.filter(p => !isDataUrlImage_(p));
+    const remainingDataPhotos = dataPhotos.slice(existing.length);
+    reused += Math.min(existing.length, dataPhotos.length);
+
+    return {
+      ...row,
+      photos: [...existing, ...nonDataPhotos, ...remainingDataPhotos],
+    };
+  });
+
+  return { rows: nextRows, reused };
+}
+
+function answerPhotoDedupeKey_(row) {
+  const section = String(row?.section_code || row?.section_id || row?.section_title || "").trim();
+  const question = String(row?.question_id || "").trim();
+  if (!question) return "";
+  return `${section}::${question}`;
 }
 
 function resolveBranchDriveFolder_(ss, payload) {
