@@ -143,6 +143,46 @@
     `;
   };
 
+  window.tplBrowserAuthScreen = function tplBrowserAuthScreen() {
+    const appVersion = (typeof APP_VERSION !== "undefined" && APP_VERSION) ? `v${APP_VERSION}` : "";
+    const versionLine = appVersion ? `<div class="muted homeVersion">Версия: ${h(appVersion)}</div>` : "";
+
+    return `
+      <div class="container">
+        <div class="card homeCard">
+          <div class="screenHeader">
+            <div class="screenHeaderTitles">
+              <div class="title">Вход в браузере</div>
+              <div class="subTitle">Укажите ФИО. Код нужен только для доступа уровня УК.</div>
+            </div>
+          </div>
+
+          <div class="noticeBlock">
+            <div class="noticeTitle">Код можно оставить пустым</div>
+            <div class="noticeText">
+              Если код не введён, проверка будет оформлена как обычный браузерный вход.
+            </div>
+          </div>
+
+          <form id="browserAuthForm" class="browserAuthForm" novalidate>
+            <label class="formField">
+              <span class="fieldLabel">ФИО</span>
+              <input id="browserAuthFio" type="text" autocomplete="name" placeholder="Иванов Иван Иванович" />
+            </label>
+            <label class="formField">
+              <span class="fieldLabel">Код доступа</span>
+              <input id="browserAuthCode" type="text" autocomplete="one-time-code" placeholder="Оставьте пустым, если кода нет" />
+            </label>
+            <button id="browserAuthSubmit" class="btn btnPrimary" type="submit">Войти</button>
+            <div id="browserAuthStatus" class="hint" role="status"></div>
+          </form>
+
+          ${versionLine}
+        </div>
+      </div>
+    `;
+  };
+
   // ---------- browser auth screen ----------
   window.tplBrowserAuthScreen = function tplBrowserAuthScreen() {
     const appVersion = (typeof APP_VERSION !== "undefined" && APP_VERSION) ? `v${APP_VERSION}` : "";
@@ -169,6 +209,46 @@
             <div id="tgLoginWidget" class="authWidget"></div>
             <div id="tgLoginStatus" class="hint" style="margin-top:10px;"></div>
           </div>
+
+          ${versionLine}
+        </div>
+      </div>
+    `;
+  };
+
+  window.tplBrowserAuthScreen = function tplBrowserAuthScreen() {
+    const appVersion = (typeof APP_VERSION !== "undefined" && APP_VERSION) ? `v${APP_VERSION}` : "";
+    const versionLine = appVersion ? `<div class="muted homeVersion">Версия: ${h(appVersion)}</div>` : "";
+
+    return `
+      <div class="container">
+        <div class="card homeCard">
+          <div class="screenHeader">
+            <div class="screenHeaderTitles">
+              <div class="title">Вход в браузере</div>
+              <div class="subTitle">Укажите ФИО. Код нужен только для доступа уровня УК.</div>
+            </div>
+          </div>
+
+          <div class="noticeBlock">
+            <div class="noticeTitle">Код можно оставить пустым</div>
+            <div class="noticeText">
+              Если код не введён, проверка будет оформлена как обычный браузерный вход.
+            </div>
+          </div>
+
+          <form id="browserAuthForm" class="browserAuthForm" novalidate>
+            <label class="formField">
+              <span class="fieldLabel">ФИО</span>
+              <input id="browserAuthFio" type="text" autocomplete="name" placeholder="Иванов Иван Иванович" />
+            </label>
+            <label class="formField">
+              <span class="fieldLabel">Код доступа</span>
+              <input id="browserAuthCode" type="text" autocomplete="one-time-code" placeholder="Оставьте пустым, если кода нет" />
+            </label>
+            <button id="browserAuthSubmit" class="btn btnPrimary" type="submit">Войти</button>
+            <div id="browserAuthStatus" class="hint" role="status"></div>
+          </form>
 
           ${versionLine}
         </div>

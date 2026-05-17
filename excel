@@ -93,12 +93,13 @@ function doGet(e) {
 
     let payload;
     if (action === "all") {
+      const inspectors = readSheetAsObjects_(ss, SHEET_NAMES.inspectors);
       payload = {
         sections: readSheetAsObjects_(ss, SHEET_NAMES.sections),
         checklist: readSheetAsObjects_(ss, SHEET_NAMES.checklist),
         branches: readSheetAsObjects_(ss, SHEET_NAMES.branches),
         roll_weights: readSheetAsObjects_(ss, SHEET_NAMES.roll_weights),
-        inspectors: readSheetAsObjects_(ss, SHEET_NAMES.inspectors),
+        inspectors: stripSensitiveInspectorFields_(inspectors),
         settings: SETTINGS,
         meta: { updatedAt: new Date().toISOString() },
       };
@@ -124,6 +125,11 @@ function doGet(e) {
       payload = verified
         ? { ok: true, user: verified }
         : { ok: false, error: "telegram_login_invalid" };
+    }
+    else if (action === "browser_auth") {
+      const fio = e?.parameter?.fio ? String(e.parameter.fio).trim() : "";
+      const code = e?.parameter?.code ? String(e.parameter.code).trim() : "";
+      payload = verifyBrowserAuth_(ss, fio, code);
     }
     else if (action === "submission") {
       const submissionId = e?.parameter?.submission_id ? String(e.parameter.submission_id).trim() : "";
@@ -320,6 +326,61 @@ function readSheetAsKeyValue_(ss, name) {
     if (key) out[key] = values[i][1];
   }
   return out;
+}
+
+function inspectorCodeAliases_() {
+  return [
+    "access_code", "auth_code", "browser_code", "login_code", "code",
+    "код", "код_доступа", "код доступа"
+  ];
+}
+
+function normalizeAccessCode_(code) {
+  return String(code || "").trim().replace(/\s+/g, "").toLowerCase();
+}
+
+function stripSensitiveInspectorFields_(rows) {
+  const sensitive = inspectorCodeAliases_().map(normalizeHeaderKey_);
+  return (rows || []).map(row => {
+    const out = {};
+    Object.keys(row || {}).forEach(key => {
+      if (!sensitive.includes(normalizeHeaderKey_(key))) out[key] = row[key];
+    });
+    return out;
+  });
+}
+
+function verifyBrowserAuth_(ss, fio, code) {
+  const cleanFio = String(fio || "").trim().replace(/\s+/g, " ");
+  const cleanCode = normalizeAccessCode_(code);
+  if (!cleanFio) return { ok: false, error: "fio_required" };
+  if (!cleanCode) return { ok: false, error: "code_required" };
+
+  const inspectors = readSheetAsObjects_(ss, SHEET_NAMES.inspectors);
+  const row = (inspectors || []).find(item => {
+    const rowCode = getByKeys_(item, inspectorCodeAliases_());
+    return normalizeAccessCode_(rowCode) === cleanCode;
+  });
+
+  if (!row) return { ok: false, error: "code_not_found" };
+
+  const rowId = String(getByKeys_(row, ["tg_user_id", "tg_id", "id"]) || "").trim();
+  const rowName = String(getByKeys_(row, ["fio", "name", "tg_name", "ФИО", "фио", "проверяющий"]) || "").trim();
+  const id = rowId || `code_${cleanCode}`;
+
+  return {
+    ok: true,
+    user: {
+      id,
+      username: "",
+      first_name: "",
+      last_name: "",
+      name: cleanFio || rowName,
+      browser_auth: true,
+      is_uk_checker: true,
+      mc_or_no: "ук",
+    },
+  };
 }
 
 function getOrCreateSheet_(ss, name, headers) {

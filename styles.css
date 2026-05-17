@@ -910,6 +910,21 @@ body.is-number-editing .bottomBar{
 .authWidget{
   min-height: 52px;
 }
+.browserAuthForm{
+  display: grid;
+  gap: 14px;
+  width: 100%;
+  margin-top: 16px;
+}
+.formField{
+  display: grid;
+  gap: 6px;
+}
+.fieldLabel{
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--muted);
+}
 
 .screenHeader{
   display: flex;

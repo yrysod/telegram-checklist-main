@@ -261,6 +261,15 @@
       return await loadJsonp(url);
     },
 
+    async verifyBrowserAuth({ fio, code } = {}) {
+      const url = buildUrlWithParams(DATA_JSONP_URL, {
+        action: "browser_auth",
+        fio: norm(fio || ""),
+        code: norm(code || ""),
+      });
+      return await loadJsonp(url);
+    },
+
     // POST submit
     async submit(payloadObj, { usePostMessage = false } = {}) {
       return await iframePostSubmit(payloadObj, { usePostMessage, action: "submit" });

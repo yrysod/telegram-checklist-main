@@ -135,6 +135,44 @@
     };
   }
 
+  function normalizeAccessCode(code) {
+    return norm(code).replace(/\s+/g, "").toLowerCase();
+  }
+
+  function findInspectorByAccessCode(code) {
+    const target = normalizeAccessCode(code);
+    if (!target || !Array.isArray(DATA?.inspectors)) return null;
+
+    return DATA.inspectors.find((row) => {
+      const raw = getAny(row, [
+        "access_code", "auth_code", "browser_code", "login_code", "code",
+        "код", "код_доступа", "код доступа"
+      ], "");
+      return normalizeAccessCode(raw) === target;
+    }) || null;
+  }
+
+  function buildBrowserAuthUser({ fio, code, inspectorRow }) {
+    const cleanFio = norm(fio);
+    const cleanCode = normalizeAccessCode(code);
+    const rowId = inspectorRow ? norm(getAny(inspectorRow, ["tg_user_id", "tg_id", "id"], "")) : "";
+    const rowName = inspectorRow ? norm(getAny(inspectorRow, [
+      "fio", "name", "tg_name", "ФИО", "фио", "проверяющий"
+    ], "")) : "";
+    const name = cleanFio || rowName;
+    const idBase = rowId || (cleanCode ? `code_${cleanCode}` : `browser_${name.toLowerCase().replace(/[^a-zа-я0-9]+/gi, "_")}`);
+    return {
+      id: idBase || `browser_${Date.now()}`,
+      username: "",
+      first_name: "",
+      last_name: "",
+      name,
+      browser_auth: true,
+      auth_code: cleanCode,
+      is_uk_checker: !!cleanCode,
+    };
+  }
+
   function zoneLabelLower(zone) {
     const v = String(zone ?? "").toLowerCase();
     if (v === "green") return "зелёная зона";
@@ -1820,6 +1858,82 @@
     const pendingResultId = norm(opts?.resultId || "");
     mount(tplBrowserAuthScreen());
 
+    const authForm = document.getElementById("browserAuthForm");
+    if (authForm) {
+      const fioInput = document.getElementById("browserAuthFio");
+      const codeInput = document.getElementById("browserAuthCode");
+      const submitBtn = document.getElementById("browserAuthSubmit");
+      const statusEl = document.getElementById("browserAuthStatus");
+      const savedUser = window.getBrowserTgUser ? window.getBrowserTgUser() : null;
+
+      if (fioInput && savedUser?.browser_auth && savedUser?.name) fioInput.value = savedUser.name;
+
+      const setStatus = (text, isError = false) => {
+        if (!statusEl) return;
+        statusEl.textContent = text || "";
+        statusEl.style.color = isError ? "var(--danger)" : "";
+      };
+
+      authForm.onsubmit = async (ev) => {
+        ev.preventDefault();
+        const fio = norm(fioInput?.value || "");
+        const code = norm(codeInput?.value || "");
+
+        if (!fio) {
+          setStatus("Введите ФИО.", true);
+          if (fioInput) fioInput.focus();
+          return;
+        }
+
+        if (submitBtn) submitBtn.disabled = true;
+        let normalized = null;
+        if (code) {
+          setStatus("Проверяю код...");
+          try {
+            const res = await api.verifyBrowserAuth({ fio, code });
+            if (!res || res.ok !== true || !res.user) {
+              setStatus("Код не найден. Проверьте код или оставьте поле пустым.", true);
+              if (submitBtn) submitBtn.disabled = false;
+              if (codeInput) codeInput.focus();
+              return;
+            }
+            normalized = res.user;
+          } catch (err) {
+            setStatus("Не получилось проверить код. Попробуйте ещё раз.", true);
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+          }
+        } else {
+          normalized = buildBrowserAuthUser({ fio, code, inspectorRow: null });
+        }
+        if (window.setBrowserTgUser) window.setBrowserTgUser(normalized);
+        STATE.tgUser = normalized;
+        STATE.fio = fio;
+
+        if (pendingResultId) {
+          setStatus("Открываю результат...");
+          try {
+            const result = await api.getSubmission(pendingResultId);
+            if (result && result.ok) {
+              renderReadonlyResult(DATA, result);
+              return;
+            }
+            setStatus("Результат не найден или ссылка устарела.", true);
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+          } catch (err) {
+            setStatus("Не получилось открыть результат.", true);
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+          }
+        }
+
+        renderStart(DATA);
+      };
+
+      return;
+    }
+
     const widgetHost = document.getElementById("tgLoginWidget");
     const statusEl = document.getElementById("tgLoginStatus");
 
@@ -2848,8 +2962,8 @@
       tg_first_name: tgUser?.first_name || "",
       tg_last_name: tgUser?.last_name || "",
       tg_name: tgUser?.name || "",
-      isUkChecker,
-      mc_or_no: mcValue,
+      isUkChecker: isUkChecker || !!(tgUser?.browser_auth && tgUser?.is_uk_checker),
+      mc_or_no: (tgUser?.browser_auth && tgUser?.is_uk_checker) ? "ук" : mcValue,
     };
   }
 
