@@ -1897,7 +1897,15 @@
               if (codeInput) codeInput.focus();
               return;
             }
-            normalized = res.user;
+            const fallbackUser = buildBrowserAuthUser({ fio, code, inspectorRow: null });
+            normalized = {
+              ...fallbackUser,
+              ...res.user,
+              id: norm(res.user.id || fallbackUser.id),
+              name: norm(res.user.name || fio || fallbackUser.name),
+              browser_auth: true,
+              is_uk_checker: true,
+            };
           } catch (err) {
             setStatus("Не получилось проверить код. Попробуйте ещё раз.", true);
             if (submitBtn) submitBtn.disabled = false;
@@ -1928,7 +1936,7 @@
           }
         }
 
-        renderStart(DATA);
+        renderBranchPickerScreen(DATA);
       };
 
       return;
