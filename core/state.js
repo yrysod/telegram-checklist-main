@@ -85,7 +85,10 @@
   };
 
   window.getAuthTgUser = function getAuthTgUser() {
-    if (window.IS_TG) return window.getTgUser ? window.getTgUser() : null;
+    if (window.IS_TG) {
+      const tgUser = window.getTgUser ? window.getTgUser() : null;
+      if (tgUser) return tgUser;
+    }
     return window.getBrowserTgUser ? window.getBrowserTgUser() : null;
   };
 
