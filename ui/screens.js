@@ -1929,7 +1929,7 @@
             const error = norm(res?.error || "");
             const message =
               error === "code_required_for_fio"
-                ? "Для этого ФИО нужен код доступа."
+                ? "У вас доступ УК, введите код."
                 : error === "code_fio_mismatch"
                   ? "Этот код привязан к другому ФИО."
                   : code
