@@ -1706,8 +1706,9 @@
     STATE.tgUser = tgUser;
     const tgId = norm(tgUser?.id || "");
     const hasAuth = !!tgId;
+    const isTelegramContext = !!(window.Telegram?.WebApp?.initData || window.Telegram?.WebApp?.initDataUnsafe?.user);
 
-    mount(tplHomeScreen({ showCabinet: hasAuth }));
+    mount(tplHomeScreen({ showCabinet: hasAuth, isTg: isTelegramContext }));
 
     const nonTgBlock = document.getElementById("nonTgBlock");
     const nameEl = document.getElementById("homeUserName");
@@ -1723,10 +1724,10 @@
     const cabinetHint = document.getElementById("homeCabinetHint");
     const authBtn = document.getElementById("homeAuthBtn");
 
-    const displayName = tgUser?.name || "Пользователь Telegram";
+    const displayName = tgUser?.name || "Пользователь";
 
     if (nameEl) {
-      nameEl.textContent = hasAuth ? displayName : "Войдите через Telegram";
+      nameEl.textContent = hasAuth ? displayName : (isTelegramContext ? "Войдите через Telegram" : "Авторизуйтесь");
     }
     if (handleEl) {
       if (hasAuth && tgUser?.username) {
@@ -1738,7 +1739,7 @@
       }
     }
     if (avatarEl) {
-      avatarEl.textContent = hasAuth ? initialsFromName(displayName) : "TG";
+      avatarEl.textContent = hasAuth ? initialsFromName(displayName) : (isTelegramContext ? "TG" : "ID");
     }
 
     if (nonTgBlock) nonTgBlock.style.display = hasAuth ? "none" : "";
@@ -1750,7 +1751,9 @@
     if (cabinetHint) {
       if (!hasAuth) {
         cabinetHint.style.display = "";
-        cabinetHint.textContent = "Чтобы начать проверку, войдите через Telegram.";
+        cabinetHint.textContent = isTelegramContext
+          ? "Чтобы начать проверку, войдите через Telegram."
+          : "Чтобы начать проверку, авторизуйтесь.";
       } else if (!tgId) {
         cabinetHint.style.display = "";
         cabinetHint.textContent = "Не удалось определить ваш Telegram ID.";

@@ -94,6 +94,7 @@
   // ---------- home screen ----------
   window.tplHomeScreen = function tplHomeScreen(opts) {
     opts = opts || {};
+    const isTg = !!opts.isTg;
     const appVersion = (typeof APP_VERSION !== "undefined" && APP_VERSION) ? `v${APP_VERSION}` : "";
     const versionLine = appVersion ? `<div class="muted homeVersion">Версия: ${h(appVersion)}</div>` : "";
 
@@ -109,11 +110,11 @@
           </div>
 
           <div id="nonTgBlock" class="noticeBlock" style="display:none;">
-            <div class="noticeTitle">Открыто вне Telegram</div>
+            <div class="noticeTitle">${isTg ? "Открыто вне Telegram" : "Доступ к проверкам"}</div>
             <div class="noticeText">
-              Чтобы начать проверку, войдите через Telegram.
+              ${isTg ? "Чтобы начать проверку, войдите через Telegram." : "Чтобы начать проверку, авторизуйтесь."}
             </div>
-            <button id="homeAuthBtn" class="btn btnPrimary homeActionBtn" type="button">Авторизоваться в Telegram</button>
+            <button id="homeAuthBtn" class="btn btnPrimary homeActionBtn" type="button">${isTg ? "Авторизоваться в Telegram" : "Авторизоваться"}</button>
           </div>
 
           <div class="homeActions">
