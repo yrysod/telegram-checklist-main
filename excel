@@ -339,6 +339,10 @@ function normalizeAccessCode_(code) {
   return String(code || "").trim().replace(/\s+/g, "").toLowerCase();
 }
 
+function normalizeFioForCompare_(fio) {
+  return String(fio || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 function stripSensitiveInspectorFields_(rows) {
   const sensitive = inspectorCodeAliases_().map(normalizeHeaderKey_);
   return (rows || []).map(row => {
@@ -354,18 +358,50 @@ function verifyBrowserAuth_(ss, fio, code) {
   const cleanFio = String(fio || "").trim().replace(/\s+/g, " ");
   const cleanCode = normalizeAccessCode_(code);
   if (!cleanFio) return { ok: false, error: "fio_required" };
-  if (!cleanCode) return { ok: false, error: "code_required" };
 
   const inspectors = readSheetAsObjects_(ss, SHEET_NAMES.inspectors);
-  const row = (inspectors || []).find(item => {
+  const fioKey = normalizeFioForCompare_(cleanFio);
+  const rowByFio = (inspectors || []).find(item => {
+    const rowName = getByKeys_(item, ["fio", "name", "tg_name", "ФИО", "фио", "проверяющий"]);
+    return normalizeFioForCompare_(rowName) === fioKey;
+  }) || null;
+
+  if (!cleanCode) {
+    const rowCode = rowByFio ? getByKeys_(rowByFio, inspectorCodeAliases_()) : "";
+    if (normalizeAccessCode_(rowCode)) {
+      return { ok: false, error: "code_required_for_fio" };
+    }
+
+    const rowId = rowByFio ? String(getByKeys_(rowByFio, ["tg_user_id", "tg_id", "id"]) || "").trim() : "";
+    const id = rowId || `browser_${fioKey.replace(/[^a-zа-я0-9]+/gi, "_") || Date.now()}`;
+    return {
+      ok: true,
+      user: {
+        id,
+        username: "",
+        first_name: "",
+        last_name: "",
+        name: cleanFio,
+        browser_auth: true,
+        is_uk_checker: false,
+        mc_or_no: "",
+      },
+    };
+  }
+
+  const rowByCode = (inspectors || []).find(item => {
     const rowCode = getByKeys_(item, inspectorCodeAliases_());
     return normalizeAccessCode_(rowCode) === cleanCode;
-  });
+  }) || null;
 
-  if (!row) return { ok: false, error: "code_not_found" };
+  if (!rowByCode) return { ok: false, error: "code_not_found" };
 
-  const rowId = String(getByKeys_(row, ["tg_user_id", "tg_id", "id"]) || "").trim();
-  const rowName = String(getByKeys_(row, ["fio", "name", "tg_name", "ФИО", "фио", "проверяющий"]) || "").trim();
+  if (rowByFio && rowByCode !== rowByFio) {
+    return { ok: false, error: "code_fio_mismatch" };
+  }
+
+  const rowId = String(getByKeys_(rowByCode, ["tg_user_id", "tg_id", "id"]) || "").trim();
+  const rowName = String(getByKeys_(rowByCode, ["fio", "name", "tg_name", "ФИО", "фио", "проверяющий"]) || "").trim();
   const id = rowId || `code_${cleanCode}`;
 
   return {
@@ -1486,21 +1522,32 @@ function upsertInspector_(ss, payload) {
   const tgUserId = safe_(payload.tg_user_id || payload.tg_id || tg.user_id || tg.id);
   const fio = safe_(payload.fio || payload.tg_name || tg.name || "");
 
-  if (!tgUserId) return;
+  if (!tgUserId && !fio) return;
 
   const now = new Date().toISOString();
   const headerMap = getHeaderMap_(sh);
 
   const idCol = headerMap["tg_user_id"];
-  if (!idCol) return;
+  const fioCol = headerMap["fio"];
 
   const lastRow = sh.getLastRow();
   let foundRow = 0;
 
-  if (lastRow >= 2) {
+  if (lastRow >= 2 && idCol && tgUserId) {
     const ids = sh.getRange(2, idCol, lastRow - 1, 1).getValues();
     for (let i = 0; i < ids.length; i++) {
       if (String(ids[i][0] || "").trim() === String(tgUserId).trim()) {
+        foundRow = i + 2;
+        break;
+      }
+    }
+  }
+
+  if (!foundRow && lastRow >= 2 && fioCol && fio) {
+    const targetFio = normalizeFioForCompare_(fio);
+    const fios = sh.getRange(2, fioCol, lastRow - 1, 1).getValues();
+    for (let i = 0; i < fios.length; i++) {
+      if (normalizeFioForCompare_(fios[i][0]) === targetFio) {
         foundRow = i + 2;
         break;
       }
@@ -1519,33 +1566,20 @@ function upsertInspector_(ss, payload) {
 
   if (!foundRow) {
     appendObjectRowByHeaders_(sh, record);
-  } else {
-    const lastCol = sh.getLastColumn();
-    const existingVals = sh.getRange(foundRow, 1, 1, lastCol).getValues()[0];
-    const existing = {};
-    Object.keys(headerMap).forEach(key => {
-      const col = headerMap[key];
-      existing[key] = col ? existingVals[col - 1] : "";
-    });
+    return;
+  }
 
-    let changed = false;
-    Object.keys(record).forEach(key => {
-      if (key === "updated_at") return;
-      const col = headerMap[key];
-      if (!col) return;
+  Object.keys(record).forEach(key => {
+    const col = headerMap[key];
+    if (!col) return;
 
-      const nextVal = record[key];
-      if (nextVal === "" || nextVal === null || nextVal === undefined) return;
+    const nextVal = record[key];
+    if (nextVal === "" || nextVal === null || nextVal === undefined) return;
 
-      const prevVal = existing[key];
-      if (String(prevVal ?? "") === String(nextVal ?? "")) return;
+    sh.getRange(foundRow, col).setValue(nextVal);
+  });
 
-      sh.getRange(foundRow, col).setValue(nextVal);
-      changed = true;
-    });
-
-    if (changed && headerMap.updated_at) {
-      sh.getRange(foundRow, headerMap.updated_at).setValue(now);
-    }
+  if (headerMap.updated_at) {
+    sh.getRange(foundRow, headerMap.updated_at).setValue(now);
   }
 }

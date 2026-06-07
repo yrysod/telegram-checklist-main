@@ -1922,32 +1922,37 @@
 
         if (submitBtn) submitBtn.disabled = true;
         let normalized = null;
-        if (code) {
-          setStatus("Проверяю код...");
-          try {
-            const res = await api.verifyBrowserAuth({ fio, code });
-            if (!res || res.ok !== true || !res.user) {
-              setStatus("Код не найден. Проверьте код или оставьте поле пустым.", true);
-              if (submitBtn) submitBtn.disabled = false;
-              if (codeInput) codeInput.focus();
-              return;
-            }
-            const fallbackUser = buildBrowserAuthUser({ fio, code, inspectorRow: null });
-            normalized = {
-              ...fallbackUser,
-              ...res.user,
-              id: norm(res.user.id || fallbackUser.id),
-              name: norm(res.user.name || fio || fallbackUser.name),
-              browser_auth: true,
-              is_uk_checker: true,
-            };
-          } catch (err) {
-            setStatus("Не получилось проверить код. Попробуйте ещё раз.", true);
+        setStatus(code ? "Проверяю код..." : "Проверяю доступ...");
+        try {
+          const res = await api.verifyBrowserAuth({ fio, code });
+          if (!res || res.ok !== true || !res.user) {
+            const error = norm(res?.error || "");
+            const message =
+              error === "code_required_for_fio"
+                ? "Для этого ФИО нужен код доступа."
+                : error === "code_fio_mismatch"
+                  ? "Этот код привязан к другому ФИО."
+                  : code
+                    ? "Код не найден. Проверьте код или оставьте поле пустым."
+                    : "Не получилось проверить доступ. Попробуйте ещё раз.";
+            setStatus(message, true);
             if (submitBtn) submitBtn.disabled = false;
+            if (codeInput && (code || error === "code_required_for_fio" || error === "code_fio_mismatch")) codeInput.focus();
             return;
           }
-        } else {
-          normalized = buildBrowserAuthUser({ fio, code, inspectorRow: null });
+          const fallbackUser = buildBrowserAuthUser({ fio, code, inspectorRow: null });
+          normalized = {
+            ...fallbackUser,
+            ...res.user,
+            id: norm(res.user.id || fallbackUser.id),
+            name: norm(res.user.name || fio || fallbackUser.name),
+            browser_auth: true,
+            is_uk_checker: !!res.user.is_uk_checker,
+          };
+        } catch (err) {
+          setStatus("Не получилось проверить доступ. Попробуйте ещё раз.", true);
+          if (submitBtn) submitBtn.disabled = false;
+          return;
         }
         if (window.setBrowserTgUser) window.setBrowserTgUser(normalized);
         STATE.tgUser = normalized;
