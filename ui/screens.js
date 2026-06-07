@@ -1141,7 +1141,7 @@
 
   function buildIssuesFromAnswerRows(answerRows) {
     const normalizedRows = normalizeAnswerRows(answerRows);
-    return normalizedRows
+    return dedupeIssues(normalizedRows
       .filter(row => row.isIssue)
       .map(row => ({
         qid: row.qid,
@@ -1154,7 +1154,39 @@
         scoreUnit: row.scoreUnit,
         comment: row.comment,
         photos: row.photos,
-      }));
+      })));
+  }
+
+  function dedupeIssues(issues) {
+    const map = new Map();
+    (issues || []).forEach(item => {
+      const key = [
+        norm(item.qid || item.question_id || ""),
+        norm(item.sectionTitle || item.section_title || item.section || ""),
+        norm(item.title || item.question || ""),
+      ].join("|");
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, {
+          ...item,
+          photos: Array.isArray(item.photos) ? [...item.photos] : [],
+        });
+        return;
+      }
+
+      if (!existing.comment && item.comment) existing.comment = item.comment;
+      if (!existing.photos?.length && item.photos?.length) existing.photos = [...item.photos];
+      else if (item.photos?.length) {
+        const seen = new Set(existing.photos || []);
+        item.photos.forEach(photo => {
+          if (!seen.has(photo)) {
+            seen.add(photo);
+            existing.photos.push(photo);
+          }
+        });
+      }
+    });
+    return [...map.values()];
   }
 
   function buildIssuesFromAnswers(answers) {
@@ -3359,7 +3391,7 @@
     `);
 
     const list = document.getElementById("issuesList");
-    const issues = (safeResult.issues || []).slice();
+    const issues = dedupeIssues((safeResult.issues || []).slice());
 
     if (!issues.length) {
       list.innerHTML = `<div class="hint">Ошибок не найдено 🎉</div>`;
@@ -3513,11 +3545,11 @@
 
     let issues = [];
     if (answerRows.length) {
-      issues = buildIssuesFromAnswerRows(answerRows).map(mergeIssue);
+      issues = dedupeIssues(buildIssuesFromAnswerRows(answerRows).map(mergeIssue));
     } else if (hasAnswersPayload) {
-      issues = buildIssuesFromAnswers(storedAnswers).map(mergeIssue);
+      issues = dedupeIssues(buildIssuesFromAnswers(storedAnswers).map(mergeIssue));
     } else if (payloadIssues.length) {
-      issues = payloadIssues.map(it => {
+      issues = dedupeIssues(payloadIssues.map(it => {
         const scoreVal = it.scoreEarned ?? it.score_earned ?? it.score ?? "";
         const scoreMax = it.scoreMax ?? it.score_max ?? "";
         const severityRaw = norm(it.severity || "").toLowerCase();
@@ -3532,7 +3564,7 @@
           comment: it.comment || "",
           photos: it.photos || [],
         };
-      });
+      }));
     }
 
     const zone = sub.zone || stored.zone || "gray";
