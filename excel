@@ -618,13 +618,16 @@ function uploadAnswerPhotosToDrive_(ss, payload, flatRows) {
     const zoneFolder = ensureChildFolderByName_(dateFolder, sanitizeDriveName_(sectionTitle || "Общая"));
 
     const nextPhotos = [];
+    const seenSources = new Set();
     photos.forEach((photo, photoIdx) => {
       total += 1;
       const src = String(photo || "").trim();
       if (!src) return;
+      if (seenSources.has(src)) return;
+      seenSources.add(src);
 
       if (!isDataUrlImage_(src)) {
-        nextPhotos.push(src);
+        if (!nextPhotos.includes(src)) nextPhotos.push(src);
         return;
       }
 
@@ -637,6 +640,11 @@ function uploadAnswerPhotosToDrive_(ss, payload, flatRows) {
 
         const ext = mimeToFileExt_(decoded.mimeType);
         const fileName = buildUploadedPhotoName_(payload, row, rowIdx, photoIdx, ext);
+        const existingUrl = findExistingFileUrlByName_(zoneFolder, fileName);
+        if (existingUrl) {
+          nextPhotos.push(existingUrl);
+          return;
+        }
         const blob = Utilities.newBlob(decoded.bytes, decoded.mimeType, fileName);
         const file = zoneFolder.createFile(blob);
         nextPhotos.push(file.getUrl());
@@ -1048,6 +1056,15 @@ function ensureChildFolderByName_(parentFolder, name) {
   const existing = parentFolder.getFoldersByName(cleanName);
   if (existing.hasNext()) return existing.next();
   return parentFolder.createFolder(cleanName);
+}
+
+function findExistingFileUrlByName_(folder, fileName) {
+  if (!folder || !fileName) return "";
+  try {
+    const files = folder.getFilesByName(String(fileName));
+    if (files.hasNext()) return files.next().getUrl();
+  } catch (_) {}
+  return "";
 }
 
 function sanitizeDriveName_(value) {
