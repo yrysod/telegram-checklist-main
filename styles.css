@@ -964,6 +964,16 @@ body.is-number-editing .bottomBar{
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+.resultShareBox{
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  width: 100%;
+}
+.resultShareBox input{
+  font-size: 14px;
+  padding-right: 12px;
+}
 
 .resultActions .btn{
   width: 100%;

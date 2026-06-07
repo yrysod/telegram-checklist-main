@@ -746,12 +746,19 @@
   window.tplResultActions = function tplResultActions(opts) {
     opts = opts || {};
     const showShare = (opts.showShare === undefined) ? true : !!opts.showShare;
+    const resultLink = h(opts.resultLink || "");
 
     const shareEnabled = (typeof FEATURE_SHARE_LINK !== "undefined") ? !!FEATURE_SHARE_LINK : false;
 
     return `
       <div class="resultActions">
-        ${showShare && shareEnabled ? `<button id="copyResultLinkBtn" class="btn ghost">Скопировать ссылку</button>` : ``}
+        ${showShare && shareEnabled && resultLink ? `
+          <div class="resultShareBox">
+            <label class="fieldLabel" for="resultShareLink">Ссылка на проверку</label>
+            <input id="resultShareLink" type="text" readonly value="${resultLink}" />
+            <button id="copyResultLinkBtn" class="btn ghost" type="button">Скопировать ссылку</button>
+          </div>
+        ` : ``}
         <button id="newCheckBtn" class="btn primary">Новая проверка</button>
       </div>
     `;

@@ -3333,6 +3333,7 @@
     const addr = norm(getAddressLabel(branchRow || {}));
     const addrLine = [norm(STATE.city || ""), addr].filter(Boolean).join(", ");
     const metaDate = STATE.lastSubmittedAt ? formatRuDateTime(STATE.lastSubmittedAt) : "";
+    const resultLink = buildResultLink(STATE.lastResultId);
 
     mount(`
       <div class="container">
@@ -3346,7 +3347,7 @@
             date: metaDate,
           },
         })}
-        ${tplResultActions({ showShare: true })}
+        ${tplResultActions({ showShare: true, resultLink })}
 
         <div class="card">
           <div class="cardHeader">
@@ -3446,6 +3447,11 @@
 
         const url = buildResultLink(id);
         const ok = await copyTextToClipboard(url);
+        const linkInput = document.getElementById("resultShareLink");
+        if (linkInput) {
+          linkInput.focus();
+          linkInput.select();
+        }
         copyBtn.textContent = ok ? "Ссылка скопирована ✅" : "Не удалось скопировать";
         setTimeout(() => (copyBtn.textContent = "Скопировать ссылку"), 1500);
       };
