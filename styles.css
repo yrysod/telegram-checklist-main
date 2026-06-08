@@ -1483,3 +1483,15 @@ body.is-number-editing .bottomBar{
   vertical-align: top;
   text-align: left;
 }
+
+.continueDraftActions{
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.continueDraftActions .btn{
+  width: 100%;
+}
+#draftSyncLine{
+  margin-top: 8px;
+}

@@ -9,6 +9,8 @@ const SHEET_NAMES = {
   inspectors: "Проверяющие",
   submissions: "Результаты",
   answers: "Ответы",
+  drafts: "Черновики",
+  continue_tokens: "Токены продолжения",
   logs: "Логи",
 };
 
@@ -67,6 +69,30 @@ const INSPECTORS_HEADERS = [
   "updated_at",
 ];
 
+const DRAFTS_HEADERS = [
+  "draft_id",
+  "created_at",
+  "updated_at",
+  "expires_at",
+  "status",
+  "owner_mode",
+  "owner_tg_user_id",
+  "owner_browser_id",
+  "owner_name",
+  "branch_id",
+  "branch_name",
+  "payload_json",
+];
+
+const CONTINUE_TOKENS_HEADERS = [
+  "continue_token",
+  "draft_id",
+  "created_at",
+  "expires_at",
+  "used_at",
+  "created_from",
+];
+
 // Зоны (настройки теперь задаются в коде, без листа "Настройки")
 const SETTINGS = {
   block_green_if_critical: true,
@@ -76,6 +102,8 @@ const SETTINGS = {
 };
 
 const MY_SUBMISSIONS_DEFAULT_LIMIT = 200;
+const CONTINUE_TOKEN_TTL_HOURS = 8;
+const DRAFT_TTL_HOURS = 24;
 
 const LOG_HEADERS = ["ts", "level", "message", "data"];
 
@@ -131,6 +159,19 @@ function doGet(e) {
       const code = e?.parameter?.code ? String(e.parameter.code).trim() : "";
       payload = verifyBrowserAuth_(ss, fio, code);
     }
+    else if (action === "load_draft") {
+      const draftId = e?.parameter?.draft_id ? String(e.parameter.draft_id).trim() : "";
+      payload = loadDraftPayload_(ss, draftId);
+    }
+    else if (action === "create_continue_token") {
+      const draftId = e?.parameter?.draft_id ? String(e.parameter.draft_id).trim() : "";
+      const createdFrom = e?.parameter?.created_from ? String(e.parameter.created_from).trim() : "";
+      payload = createContinueToken_(ss, draftId, createdFrom);
+    }
+    else if (action === "resolve_continue_token") {
+      const token = e?.parameter?.token ? String(e.parameter.token).trim() : "";
+      payload = resolveContinueToken_(ss, token);
+    }
     else if (action === "submission") {
       const submissionId = e?.parameter?.submission_id ? String(e.parameter.submission_id).trim() : "";
       payload = getSubmissionPayload_(ss, submissionId);
@@ -173,6 +214,12 @@ function doPost(e) {
     if (action === "send_message") {
       const sendRes = sendTelegramMessageFromPayload_(ss, payload, { action });
       logInfo_("doPost: send_message result", sendRes);
+      return text_("OK");
+    }
+
+    if (action === "save_draft") {
+      const draftRes = upsertDraft_(ss, payload);
+      logInfo_("doPost: save_draft result", draftRes);
       return text_("OK");
     }
 
@@ -266,6 +313,11 @@ function doPost(e) {
       ? sendTelegramMessageFromPayload_(ss, payload, { action })
       : { ok: false, info: "skip_partial" };
     logInfo_("doPost: telegram send result", tgSendRes);
+
+    if (safe_(payload?.draft_id) && !payload?.partial) {
+      markDraftSubmitted_(ss, safe_(payload.draft_id));
+    }
+
     return text_("OK");
 
   } catch (err) {
@@ -416,6 +468,193 @@ function verifyBrowserAuth_(ss, fio, code) {
       is_uk_checker: true,
       mc_or_no: "ук",
     },
+  };
+}
+
+function addHours_(date, hours) {
+  return new Date((date || new Date()).getTime() + Number(hours || 0) * 60 * 60 * 1000);
+}
+
+function makeRandomId_(prefix) {
+  const bytes = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
+  return `${prefix || "id"}_${bytes.slice(0, 48)}`;
+}
+
+function upsertDraft_(ss, payload) {
+  const draftId = safe_(payload?.draft_id);
+  if (!draftId) return { ok: false, error: "draft_id_required" };
+
+  const sh = getOrCreateSheet_(ss, SHEET_NAMES.drafts, DRAFTS_HEADERS);
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const expiresAt = safe_(payload?.expires_at) || addHours_(now, DRAFT_TTL_HOURS).toISOString();
+  const tg = payload?.tg || {};
+  const ownerTgId = safe_(payload?.owner_tg_user_id || payload?.tg_user_id || payload?.tg_id || tg.user_id || tg.id);
+  const ownerBrowserId = safe_(payload?.owner_browser_id || payload?.browser_id || "");
+  const ownerName = safe_(payload?.owner_name || payload?.fio || payload?.tg_name || tg.name || "");
+  const ownerMode = safe_(payload?.owner_mode || (ownerTgId ? "telegram" : (ownerBrowserId ? "browser" : "unknown")));
+  const draftPayload = normalizeDraftPhotosForStorage_(ss, payload, payload?.payload || parseJsonObject_(payload?.payload_json));
+  const payloadJson = json_(draftPayload || {});
+
+  const record = {
+    draft_id: draftId,
+    updated_at: nowIso,
+    expires_at: expiresAt,
+    status: safe_(payload?.status || "draft"),
+    owner_mode: ownerMode,
+    owner_tg_user_id: ownerTgId,
+    owner_browser_id: ownerBrowserId,
+    owner_name: ownerName,
+    branch_id: safe_(payload?.branch_id),
+    branch_name: safe_(payload?.branch_name),
+    payload_json: payloadJson,
+  };
+
+  const rowIndex = findSheetRowIndexByValue_(sh, "draft_id", draftId);
+  if (!rowIndex) {
+    appendObjectRowByHeaders_(sh, { ...record, created_at: nowIso });
+  } else {
+    updateObjectRowByHeaders_(sh, rowIndex, record);
+  }
+
+  return { ok: true, draft_id: draftId, updated_at: nowIso, expires_at: expiresAt };
+}
+
+function loadDraftPayload_(ss, draftId) {
+  const id = safe_(draftId);
+  if (!id) return { ok: false, error: "draft_id_required" };
+
+  const sh = getOrCreateSheet_(ss, SHEET_NAMES.drafts, DRAFTS_HEADERS);
+  const row = findRowById_(sh, "draft_id", id);
+  if (!row) return { ok: false, error: "draft_not_found", draft_id: id };
+
+  const status = safe_(row.status || "draft");
+  if (status === "submitted") return { ok: false, error: "draft_submitted", draft_id: id };
+
+  const expiresAt = row.expires_at ? new Date(row.expires_at) : null;
+  if (expiresAt && Number.isFinite(expiresAt.getTime()) && expiresAt.getTime() < Date.now()) {
+    return { ok: false, error: "draft_expired", draft_id: id, expires_at: row.expires_at };
+  }
+
+  return {
+    ok: true,
+    draft_id: id,
+    status,
+    updated_at: row.updated_at || "",
+    expires_at: row.expires_at || "",
+    payload: parseJsonObject_(row.payload_json),
+  };
+}
+
+function createContinueToken_(ss, draftId, createdFrom) {
+  const id = safe_(draftId);
+  if (!id) return { ok: false, error: "draft_id_required" };
+
+  const draft = loadDraftPayload_(ss, id);
+  if (!draft.ok) return draft;
+
+  const sh = getOrCreateSheet_(ss, SHEET_NAMES.continue_tokens, CONTINUE_TOKENS_HEADERS);
+  const now = new Date();
+  const expiresAt = addHours_(now, CONTINUE_TOKEN_TTL_HOURS).toISOString();
+  const token = makeRandomId_("ct");
+  appendObjectRowByHeaders_(sh, {
+    continue_token: token,
+    draft_id: id,
+    created_at: now.toISOString(),
+    expires_at: expiresAt,
+    used_at: "",
+    created_from: safe_(createdFrom || ""),
+  });
+
+  return {
+    ok: true,
+    continue_token: token,
+    draft_id: id,
+    expires_at: expiresAt,
+    ttl_hours: CONTINUE_TOKEN_TTL_HOURS,
+  };
+}
+
+function resolveContinueToken_(ss, token) {
+  const cleanToken = safe_(token);
+  if (!cleanToken) return { ok: false, error: "continue_token_required" };
+
+  const sh = getOrCreateSheet_(ss, SHEET_NAMES.continue_tokens, CONTINUE_TOKENS_HEADERS);
+  const rowIndex = findSheetRowIndexByValue_(sh, "continue_token", cleanToken);
+  if (!rowIndex) return { ok: false, error: "continue_token_not_found" };
+
+  const row = getObjectRowByIndex_(sh, rowIndex);
+  const expiresAt = row.expires_at ? new Date(row.expires_at) : null;
+  if (expiresAt && Number.isFinite(expiresAt.getTime()) && expiresAt.getTime() < Date.now()) {
+    return { ok: false, error: "continue_token_expired", expires_at: row.expires_at };
+  }
+
+  const headerMap = getHeaderMap_(sh);
+  if (headerMap.used_at) sh.getRange(rowIndex, headerMap.used_at).setValue(new Date().toISOString());
+
+  const draft = loadDraftPayload_(ss, safe_(row.draft_id));
+  if (!draft.ok) return draft;
+  return {
+    ...draft,
+    continue_token: cleanToken,
+    token_expires_at: row.expires_at || "",
+  };
+}
+
+function markDraftSubmitted_(ss, draftId) {
+  const id = safe_(draftId);
+  if (!id) return { ok: false, error: "draft_id_required" };
+  const sh = getOrCreateSheet_(ss, SHEET_NAMES.drafts, DRAFTS_HEADERS);
+  const rowIndex = findSheetRowIndexByValue_(sh, "draft_id", id);
+  if (!rowIndex) return { ok: false, error: "draft_not_found" };
+  updateObjectRowByHeaders_(sh, rowIndex, {
+    updated_at: new Date().toISOString(),
+    status: "submitted",
+  });
+  return { ok: true, draft_id: id, status: "submitted" };
+}
+
+function normalizeDraftPhotosForStorage_(ss, payload, draftPayload) {
+  const draft = draftPayload && typeof draftPayload === "object" ? draftPayload : {};
+  const notes = draft.issueNotes || {};
+  const rows = [];
+  const keys = [];
+
+  Object.keys(notes || {}).forEach((key, idx) => {
+    const photos = normalizePhotosList_(notes[key]?.photos);
+    if (!photos.some(isDataUrlImage_)) return;
+    rows.push({
+      section_title: "Черновик",
+      section_code: "draft",
+      question_id: key || `note_${idx + 1}`,
+      photos,
+    });
+    keys.push(key);
+  });
+
+  if (!rows.length) return draft;
+
+  const upload = uploadAnswerPhotosToDrive_(ss, {
+    submission_id: safe_(payload?.draft_id || draft.draftId || "draft"),
+    branch_id: safe_(payload?.branch_id || draft.branchId),
+    branch_name: safe_(payload?.branch_name || ""),
+  }, rows);
+
+  if (!upload || !upload.flat || !upload.meta || upload.meta.ok === false) return draft;
+
+  const nextNotes = { ...notes };
+  upload.flat.forEach((row, idx) => {
+    const key = keys[idx];
+    if (!key || !nextNotes[key]) return;
+    nextNotes[key] = {
+      ...nextNotes[key],
+      photos: normalizePhotosList_(row.photos),
+    };
+  });
+
+  return {
+    ...draft,
+    issueNotes: nextNotes,
   };
 }
 
@@ -675,7 +914,7 @@ function uploadAnswerPhotosToDrive_(ss, payload, flatRows) {
         }
 
         const ext = mimeToFileExt_(decoded.mimeType);
-        const fileName = buildUploadedPhotoName_(payload, row, rowIdx, photoIdx, ext);
+        const fileName = buildUploadedPhotoName_(payload, row, rowIdx, photoIdx, ext, decoded.bytes);
         const existingUrl = findExistingFileUrlByName_(zoneFolder, fileName);
         if (existingUrl) {
           nextPhotos.push(existingUrl);
@@ -1140,12 +1379,23 @@ function mimeToFileExt_(mimeType) {
   return "bin";
 }
 
-function buildUploadedPhotoName_(payload, row, rowIdx, photoIdx, ext) {
+function buildUploadedPhotoName_(payload, row, rowIdx, photoIdx, ext, bytes) {
   const sid = sanitizeDriveName_(payload?.submission_id || "submission");
   const qid = sanitizeDriveName_(row?.question_id || `q_${rowIdx + 1}`);
   const section = sanitizeDriveName_(row?.section_code || row?.section_id || "section");
-  const idx = photoIdx + 1;
-  return `${sid}_${section}_${qid}_${idx}.${ext || "bin"}`;
+  const hash = bytes ? shortSha256Hex_(bytes) : `photo_${photoIdx + 1}`;
+  return `${sid}_${section}_${qid}_${hash}.${ext || "bin"}`;
+}
+
+function shortSha256Hex_(bytes) {
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, bytes);
+  return digest
+    .map(b => {
+      const v = b < 0 ? b + 256 : b;
+      return ("0" + v.toString(16)).slice(-2);
+    })
+    .join("")
+    .slice(0, 16);
 }
 
 function extractTelegramUserId_(payload, initData) {
@@ -1495,6 +1745,45 @@ function appendObjectRowByHeaders_(sh, obj) {
   });
 
   sh.appendRow(row);
+}
+
+function updateObjectRowByHeaders_(sh, rowIndex, obj) {
+  if (!sh || !rowIndex) return;
+  const map = getHeaderMap_(sh);
+  Object.keys(obj || {}).forEach(key => {
+    const col = map[key];
+    if (!col) return;
+    const value = obj[key];
+    if (value === undefined || value === null) return;
+    sh.getRange(rowIndex, col).setValue(value);
+  });
+}
+
+function getObjectRowByIndex_(sh, rowIndex) {
+  if (!sh || !rowIndex) return {};
+  const lastCol = sh.getLastColumn();
+  if (!lastCol) return {};
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h || "").trim());
+  const values = sh.getRange(rowIndex, 1, 1, lastCol).getValues()[0];
+  const obj = {};
+  headers.forEach((h, i) => { if (h) obj[h] = values[i]; });
+  return obj;
+}
+
+function findSheetRowIndexByValue_(sh, header, value) {
+  if (!sh || !header) return 0;
+  const target = String(value || "").trim();
+  if (!target) return 0;
+  const map = getHeaderMap_(sh);
+  const col = map[header];
+  if (!col) return 0;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+  const values = sh.getRange(2, col, lastRow - 1, 1).getValues();
+  for (let i = 0; i < values.length; i += 1) {
+    if (String(values[i][0] || "").trim() === target) return i + 2;
+  }
+  return 0;
 }
 
 function appendObjectsRowsByHeaders_(sh, objects) {

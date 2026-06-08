@@ -49,6 +49,36 @@
     }
 
     const resultId = qs("result");
+    const continueToken = qs("continue");
+
+    if (continueToken) {
+      try {
+        setLoading("Открываю черновик…");
+        const res = await api.resolveContinueToken(continueToken);
+        if (res && res.ok && res.payload) {
+          const draft = window.normalizeDraftPayloadForState
+            ? window.normalizeDraftPayloadForState(res.payload)
+            : res.payload;
+          if (draft && window.applyDraftToState) {
+            window.applyDraftToState(draft);
+            try {
+              const url = new URL(window.location.href);
+              url.searchParams.delete("continue");
+              window.history.replaceState(null, "", `${url.origin}${url.pathname}${url.search}${url.hash}`);
+            } catch {}
+            renderChecklist(data);
+            return;
+          }
+        }
+        const error = res?.error || "";
+        setLoading(error === "continue_token_expired" ? "Ссылка истекла, войдите заново." : "Черновик не найден или ссылка устарела.");
+        return;
+      } catch (e) {
+        setLoading("Не получилось открыть черновик 😕");
+        return;
+      }
+    }
+
     const hasAuth = hasTelegramUserInfo();
     if (!IS_TG && !hasAuth) {
       renderBrowserAuthScreen(data, { resultId });

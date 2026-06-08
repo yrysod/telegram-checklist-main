@@ -29,6 +29,11 @@
     issueNotes: {}, // key -> { text: string, photos: string[] (dataURL) }
     noteOpen: {}, // key -> bool
     singleAnswerLabels: {}, // key -> human-readable label
+
+    draftId: "",
+    serverDraftStatus: "",
+    serverDraftSavedAt: "",
+    serverDraftError: "",
   };
 
   const BROWSER_TG_USER_KEY = "tg_browser_user_v1";
@@ -134,6 +139,80 @@
 
   const LAST_DRAFT_BRANCH_KEY = "last_draft_branch_v3";
 
+  window.ensureDraftId = function ensureDraftId() {
+    try {
+      if (!STATE.draftId) {
+        STATE.draftId = (crypto?.randomUUID)
+          ? `draft_${crypto.randomUUID()}`
+          : `draft_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      }
+      return STATE.draftId;
+    } catch {
+      STATE.draftId = STATE.draftId || `draft_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      return STATE.draftId;
+    }
+  };
+
+  window.serializeDraftState = function serializeDraftState() {
+    const serialCheckbox = {};
+    for (const [k, set] of Object.entries(STATE.checkboxAnswers || {})) {
+      serialCheckbox[k] = Array.isArray(set) ? set : [...(set || [])];
+    }
+
+    return {
+      draftId: STATE.draftId || "",
+      oblast: STATE.oblast,
+      city: STATE.city,
+      fio: STATE.fio,
+      tgUser: STATE.tgUser,
+      branchId: STATE.branchId,
+      enabledSections: STATE.enabledSections,
+      activeSection: STATE.activeSection,
+      completedSections: STATE.completedSections,
+      singleAnswers: STATE.singleAnswers,
+      checkboxAnswers: serialCheckbox,
+      singleAnswerLabels: STATE.singleAnswerLabels,
+      numberAnswers: STATE.numberAnswers,
+      savedAt: Date.now(),
+      isFinished: STATE.isFinished,
+      lastResult: STATE.lastResult,
+      lastResultId: STATE.lastResultId,
+      lastSubmittedAt: STATE.lastSubmittedAt,
+      lastBotSendStatus: STATE.lastBotSendStatus,
+      lastBotSendError: STATE.lastBotSendError,
+      issueNotes: STATE.issueNotes,
+      noteOpen: STATE.noteOpen,
+      serverDraftStatus: STATE.serverDraftStatus,
+      serverDraftSavedAt: STATE.serverDraftSavedAt,
+      serverDraftError: STATE.serverDraftError,
+    };
+  };
+
+  window.normalizeDraftPayloadForState = function normalizeDraftPayloadForState(d) {
+    if (!d || typeof d !== "object") return null;
+    const out = { ...d };
+    const restored = {};
+    for (const [k, arr] of Object.entries(out.checkboxAnswers || {})) restored[k] = new Set(arr);
+    out.checkboxAnswers = restored;
+    out.singleAnswerLabels = out.singleAnswerLabels || {};
+    out.numberAnswers = out.numberAnswers || {};
+    out.lastSubmittedAt = out.lastSubmittedAt || "";
+    out.lastBotSendStatus = out.lastBotSendStatus || "";
+    out.lastBotSendError = out.lastBotSendError || "";
+    out.completedSections = out.completedSections || [];
+    out.issueNotes = out.issueNotes || {};
+    for (const k of Object.keys(out.issueNotes)) {
+      const n = out.issueNotes[k] || {};
+      if (n.photo && (!Array.isArray(n.photos) || n.photos.length === 0)) {
+        n.photos = [n.photo];
+        delete n.photo;
+      }
+      if (!Array.isArray(n.photos)) n.photos = [];
+      out.issueNotes[k] = n;
+    }
+    return out;
+  };
+
   window.setLastDraftBranchId = function setLastDraftBranchId(branchId) {
     try {
       const id = norm(branchId);
@@ -166,41 +245,17 @@
       const branchId = STATE.branchId;
       if (!branchId) return;
 
-      const serialCheckbox = {};
-      for (const [k, set] of Object.entries(STATE.checkboxAnswers || {})) {
-        serialCheckbox[k] = Array.isArray(set) ? set : [...(set || [])];
-      }
+      if (!STATE.draftId) ensureDraftId();
+      const draft = serializeDraftState();
 
       localStorage.setItem(
         draftKeyForBranch(branchId),
-        JSON.stringify({
-          oblast: STATE.oblast,
-          city: STATE.city,
-          fio: STATE.fio,
-          branchId: STATE.branchId,
-          enabledSections: STATE.enabledSections,
-          activeSection: STATE.activeSection,
-          completedSections: STATE.completedSections,
-
-          singleAnswers: STATE.singleAnswers,
-          checkboxAnswers: serialCheckbox,
-          singleAnswerLabels: STATE.singleAnswerLabels,
-          numberAnswers: STATE.numberAnswers,
-
-          savedAt: Date.now(),
-
-          isFinished: STATE.isFinished,
-          lastResult: STATE.lastResult,
-          lastResultId: STATE.lastResultId,
-          lastSubmittedAt: STATE.lastSubmittedAt,
-          lastBotSendStatus: STATE.lastBotSendStatus,
-          lastBotSendError: STATE.lastBotSendError,
-
-          issueNotes: STATE.issueNotes,
-          noteOpen: STATE.noteOpen,
-        })
+        JSON.stringify(draft)
       );
       setLastDraftBranchId(branchId);
+      if (window.queueServerDraftSave && typeof window.queueServerDraftSave === "function") {
+        window.queueServerDraftSave();
+      }
     } catch {}
   };
 
@@ -219,30 +274,7 @@
         return null;
       }
 
-      // restore checkbox sets
-      const restored = {};
-      for (const [k, arr] of Object.entries(d.checkboxAnswers || {})) restored[k] = new Set(arr);
-      d.checkboxAnswers = restored;
-      d.singleAnswerLabels = d.singleAnswerLabels || {};
-      d.numberAnswers = d.numberAnswers || {};
-      d.lastSubmittedAt = d.lastSubmittedAt || "";
-      d.lastBotSendStatus = d.lastBotSendStatus || "";
-      d.lastBotSendError = d.lastBotSendError || "";
-      d.completedSections = d.completedSections || [];
-
-      // migrate notes
-      d.issueNotes = d.issueNotes || {};
-      for (const k of Object.keys(d.issueNotes)) {
-        const n = d.issueNotes[k] || {};
-        if (n.photo && (!Array.isArray(n.photos) || n.photos.length === 0)) {
-          n.photos = [n.photo];
-          delete n.photo;
-        }
-        if (!Array.isArray(n.photos)) n.photos = [];
-        d.issueNotes[k] = n;
-      }
-
-      return d;
+      return normalizeDraftPayloadForState(d);
     } catch {
       return null;
     }
@@ -276,6 +308,10 @@
     STATE.lastBotSendError = "";
     STATE.issueNotes = {};
     STATE.noteOpen = {};
+    STATE.draftId = "";
+    STATE.serverDraftStatus = "";
+    STATE.serverDraftSavedAt = "";
+    STATE.serverDraftError = "";
     // city/fio/branchId/enabledSections пусть останутся — это “контекст”
   };
 
@@ -294,6 +330,10 @@
     STATE.lastBotSendError = "";
     STATE.issueNotes = {};
     STATE.noteOpen = {};
+    STATE.draftId = "";
+    STATE.serverDraftStatus = "";
+    STATE.serverDraftSavedAt = "";
+    STATE.serverDraftError = "";
   };
 
   // “Новая проверка (с нуля)” — очищаем всё, включая город/филиал/ФИО
@@ -319,6 +359,10 @@
     STATE.noteOpen = {};
     STATE.singleAnswerLabels = {};
     STATE.cabinetCache = null;
+    STATE.draftId = "";
+    STATE.serverDraftStatus = "";
+    STATE.serverDraftSavedAt = "";
+    STATE.serverDraftError = "";
   };
 
   // ---------- lastCheck (per branch) ----------

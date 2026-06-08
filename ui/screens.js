@@ -99,6 +99,102 @@
     return `${location.origin}${location.pathname}?result=${encodeURIComponent(id)}`;
   }
 
+  function buildContinueLink(token) {
+    const clean = norm(token);
+    if (!clean) return "";
+    return `${location.origin}${location.pathname}?continue=${encodeURIComponent(clean)}`;
+  }
+
+  let serverDraftTimer = null;
+  let serverDraftInFlight = false;
+
+  function getDraftOwnerMeta() {
+    const user = STATE.tgUser || (window.getAuthTgUser ? window.getAuthTgUser() : null) || {};
+    const id = norm(user.id || "");
+    const isBrowser = !!user.browser_auth;
+    return {
+      owner_mode: isBrowser ? "browser" : (id ? "telegram" : "unknown"),
+      owner_tg_user_id: isBrowser ? "" : id,
+      owner_browser_id: isBrowser ? id : "",
+      owner_name: norm(STATE.fio || user.name || user.username || ""),
+    };
+  }
+
+  function buildServerDraftPayload() {
+    if (!STATE.branchId) return null;
+    const draftId = window.ensureDraftId ? window.ensureDraftId() : "";
+    if (!draftId) return null;
+    const { branchName } = getBranchMeta();
+    const draft = window.serializeDraftState ? window.serializeDraftState() : {};
+    return {
+      action: "save_draft",
+      draft_id: draftId,
+      status: STATE.isFinished ? "submitted" : "draft",
+      branch_id: STATE.branchId,
+      branch_name: branchName,
+      fio: STATE.fio || "",
+      ...getDraftOwnerMeta(),
+      payload: draft,
+      payload_json: JSON.stringify(draft),
+    };
+  }
+
+  function refreshDraftStatusUi() {
+    const el = document.getElementById("draftSyncLine");
+    if (!el) return;
+    const status = norm(STATE.serverDraftStatus || "");
+    if (status === "saving") {
+      el.textContent = "Сохраняю черновик...";
+      return;
+    }
+    if (status === "error") {
+      el.textContent = "Черновик не сохранен на сервере";
+      return;
+    }
+    if (STATE.serverDraftSavedAt) {
+      el.textContent = `Черновик сохранен ${formatRuDateTime(STATE.serverDraftSavedAt)}`;
+      return;
+    }
+    el.textContent = "Черновик сохранится автоматически";
+  }
+
+  async function saveServerDraftNow() {
+    if (serverDraftInFlight) return false;
+    const payload = buildServerDraftPayload();
+    if (!payload) return false;
+    serverDraftInFlight = true;
+    STATE.serverDraftStatus = "saving";
+    STATE.serverDraftError = "";
+    refreshDraftStatusUi();
+    try {
+      await api.saveDraft(payload);
+      STATE.serverDraftStatus = "saved";
+      STATE.serverDraftSavedAt = new Date().toISOString();
+      STATE.serverDraftError = "";
+      refreshDraftStatusUi();
+      return true;
+    } catch (err) {
+      STATE.serverDraftStatus = "error";
+      STATE.serverDraftError = String(err || "");
+      refreshDraftStatusUi();
+      return false;
+    } finally {
+      serverDraftInFlight = false;
+    }
+  }
+
+  window.queueServerDraftSave = function queueServerDraftSave() {
+    if (!STATE.branchId || STATE.isFinished) return;
+    if (!window.api || !api.saveDraft) return;
+    STATE.serverDraftStatus = STATE.serverDraftStatus === "error" ? "error" : "queued";
+    refreshDraftStatusUi();
+    if (serverDraftTimer) clearTimeout(serverDraftTimer);
+    serverDraftTimer = setTimeout(() => {
+      serverDraftTimer = null;
+      saveServerDraftNow();
+    }, 12000);
+  };
+
   function getTelegramInitData() {
     try {
       return window.Telegram?.WebApp?.initData || "";
@@ -1411,6 +1507,7 @@
     STATE.oblast = draft.oblast || STATE.oblast;
     STATE.city = draft.city || STATE.city;
     STATE.fio = draft.fio || STATE.fio;
+    STATE.tgUser = draft.tgUser || STATE.tgUser;
     STATE.branchId = draft.branchId || STATE.branchId;
 
     STATE.enabledSections = draft.enabledSections || [];
@@ -1427,6 +1524,10 @@
     STATE.lastSubmittedAt = draft.lastSubmittedAt || "";
     STATE.lastBotSendStatus = draft.lastBotSendStatus || "";
     STATE.lastBotSendError = draft.lastBotSendError || "";
+    STATE.draftId = draft.draftId || draft.draft_id || STATE.draftId || "";
+    STATE.serverDraftStatus = draft.serverDraftStatus || "";
+    STATE.serverDraftSavedAt = draft.serverDraftSavedAt || "";
+    STATE.serverDraftError = draft.serverDraftError || "";
 
     STATE.issueNotes = draft.issueNotes || {};
     STATE.noteOpen = draft.noteOpen || {};
@@ -1439,6 +1540,8 @@
     }
     if (!STATE.activeSection) STATE.activeSection = STATE.enabledSections?.[0] || "";
   }
+
+  window.applyDraftToState = applyDraftToState;
 
   function renderBranchPickerScreen(data) {
     DATA = data;
@@ -1720,6 +1823,10 @@
         STATE.lastBotSendStatus = "";
         STATE.lastBotSendError = "";
         STATE.singleAnswerLabels = {};
+        STATE.draftId = "";
+        STATE.serverDraftStatus = "";
+        STATE.serverDraftSavedAt = "";
+        STATE.serverDraftError = "";
 
         saveDraft();
         renderChecklist(DATA);
@@ -2393,6 +2500,12 @@
             <div class="subTitle" id="ctxLine">${escapeHtml(ctxLine || "")}</div>
             ${fio ? `<div class="subTitle">Проверяет: <span class="userGlow">${escapeHtml(fio)}</span></div>` : ``}
             <div class="subTitle" id="sectionLine">${activeTitle ? `Раздел: ${escapeHtml(activeTitle)}` : ``}</div>
+            <div class="subTitle" id="draftSyncLine">Черновик сохранится автоматически</div>
+            <div class="continueDraftActions">
+              <button id="saveDraftNowBtn" class="btn btnSecondary" type="button">Сохранить сейчас</button>
+              <button id="continueDraftBtn" class="btn btnSecondary" type="button">Продолжить на другом устройстве</button>
+              <div id="continueDraftHint" class="hint"></div>
+            </div>
           </div>
         </div>
 
@@ -2414,6 +2527,57 @@
     const sectionLine = document.getElementById("sectionLine");
     if (sectionLine && activeTitle) {
       sectionLine.innerHTML = `Раздел: ${escapeHtml(activeTitle)} <span class="loadingPill" id="sectionLoadingPill">Загружаю…</span>`;
+    }
+    refreshDraftStatusUi();
+
+    const saveDraftNowBtn = document.getElementById("saveDraftNowBtn");
+    const continueDraftBtn = document.getElementById("continueDraftBtn");
+    const continueDraftHint = document.getElementById("continueDraftHint");
+    if (saveDraftNowBtn) {
+      saveDraftNowBtn.onclick = async () => {
+        saveDraftNowBtn.disabled = true;
+        saveDraftNowBtn.textContent = "Сохраняю...";
+        const ok = await saveServerDraftNow();
+        saveDraftNowBtn.textContent = ok ? "Сохранено" : "Не сохранено";
+        setTimeout(() => {
+          if (!saveDraftNowBtn.isConnected) return;
+          saveDraftNowBtn.disabled = false;
+          saveDraftNowBtn.textContent = "Сохранить сейчас";
+        }, 1400);
+      };
+    }
+    if (continueDraftBtn) {
+      continueDraftBtn.onclick = async () => {
+        try {
+          continueDraftBtn.disabled = true;
+          continueDraftBtn.textContent = "Готовлю ссылку...";
+          if (continueDraftHint) continueDraftHint.textContent = "";
+          window.ensureDraftId && window.ensureDraftId();
+          const saved = await saveServerDraftNow();
+          if (!saved) {
+            if (continueDraftHint) continueDraftHint.textContent = "Не удалось сохранить черновик. Попробуйте ещё раз.";
+            return;
+          }
+          const res = await api.createContinueToken(STATE.draftId, { createdFrom: IS_TG ? "telegram" : "browser" });
+          if (!res || res.ok !== true || !res.continue_token) {
+            if (continueDraftHint) continueDraftHint.textContent = "Не удалось создать ссылку продолжения.";
+            return;
+          }
+          const link = buildContinueLink(res.continue_token);
+          const ok = window.copyTextToClipboard ? await copyTextToClipboard(link) : false;
+          if (continueDraftHint) {
+            const exp = res.expires_at ? formatRuDateTime(res.expires_at) : "";
+            continueDraftHint.textContent = ok
+              ? `Ссылка скопирована. Действует 8 часов${exp ? `, до ${exp}` : ""}.`
+              : link;
+          }
+        } catch (err) {
+          if (continueDraftHint) continueDraftHint.textContent = "Не удалось создать ссылку продолжения.";
+        } finally {
+          continueDraftBtn.disabled = false;
+          continueDraftBtn.textContent = "Продолжить на другом устройстве";
+        }
+      };
     }
 
     // wire tabs
@@ -3216,6 +3380,7 @@
     const payload = {
       action: "submit",
       submission_id: submissionId || "",
+      draft_id: STATE.draftId || "",
       submitted_at: ts,
       init_data: getTelegramInitData(),
       result_link: buildResultLink(submissionId || ""),
@@ -3305,6 +3470,7 @@
     const payload = {
       action: "submit",
       submission_id: submissionId,
+      draft_id: STATE.draftId || "",
       submitted_at: ts,
       init_data: getTelegramInitData(),
       result_link: buildResultLink(submissionId),

@@ -270,6 +270,35 @@
       return await loadJsonp(url);
     },
 
+    async loadDraft(draftId) {
+      const url = buildUrlWithParams(DATA_JSONP_URL, {
+        action: "load_draft",
+        draft_id: norm(draftId || ""),
+      });
+      return await loadJsonp(url);
+    },
+
+    async createContinueToken(draftId, { createdFrom } = {}) {
+      const url = buildUrlWithParams(DATA_JSONP_URL, {
+        action: "create_continue_token",
+        draft_id: norm(draftId || ""),
+        created_from: norm(createdFrom || ""),
+      });
+      return await loadJsonp(url);
+    },
+
+    async resolveContinueToken(token) {
+      const url = buildUrlWithParams(DATA_JSONP_URL, {
+        action: "resolve_continue_token",
+        token: norm(token || ""),
+      });
+      return await loadJsonp(url);
+    },
+
+    async saveDraft(payloadObj) {
+      return await iframePostSubmit(payloadObj, { usePostMessage: false, action: "save_draft", timeoutMs: 30000 });
+    },
+
     // POST submit
     async submit(payloadObj, { usePostMessage = false } = {}) {
       return await iframePostSubmit(payloadObj, { usePostMessage, action: "submit" });
