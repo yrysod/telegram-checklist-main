@@ -2988,6 +2988,7 @@
 
         const payload = buildSubmissionPayload(submissionId, result);
         saveDraft();
+        await saveServerDraftNow();
 
         finishBtn.textContent = UI_TEXT?.submitSending || "Отправляю…";
 
