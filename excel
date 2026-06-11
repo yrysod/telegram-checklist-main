@@ -635,9 +635,12 @@ function mergeDraftPhotosIntoAnswerRows_(ss, payload, flatRows) {
     const qid = safe_(row?.question_id);
     if (!qid || !notes[qid]) return row;
 
-    const rowPhotos = normalizePhotosList_(row?.photos);
     const draftPhotos = normalizePhotosList_(notes[qid]?.photos);
     if (!draftPhotos.length) return row;
+
+    const hasStoredDraftPhotos = draftPhotos.some(photo => !isDataUrlImage_(photo));
+    const rowPhotos = normalizePhotosList_(row?.photos)
+      .filter(photo => !(hasStoredDraftPhotos && isDataUrlImage_(photo)));
 
     const seen = new Set(rowPhotos.map(String));
     const mergedPhotos = [...rowPhotos];

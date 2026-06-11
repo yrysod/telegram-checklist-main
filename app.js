@@ -23,6 +23,25 @@
     `;
   }
 
+  function networkErrorText(err, context) {
+    const msg = String(err?.message || err || "").toLowerCase();
+    if (msg.includes("timeout")) {
+      return `${context}\nСервер долго не отвечает. Проверь интернет и попробуй обновить страницу.`;
+    }
+    if (msg.includes("jsonp load")) {
+      return `${context}\nНе удалось подключиться к Apps Script. Возможно, Telegram держит старый кэш или ссылка деплоя недоступна.`;
+    }
+    return `${context}\nПроверь интернет, обнови страницу и попробуй ещё раз.`;
+  }
+
+  function payloadErrorText(payload, fallback) {
+    const err = String(payload?.error || "").trim();
+    if (!err) return fallback;
+    if (/unknown action/i.test(err)) return "Сервер Apps Script старой версии. Нужно развернуть новую версию.";
+    if (/permission|разреш/i.test(err)) return "У Apps Script нет нужных прав. Открой редактор Apps Script и пройди авторизацию.";
+    return `${fallback}\nОшибка сервера: ${err}`;
+  }
+
   function hasTelegramUserInfo() {
     try {
       const user = window.getAuthTgUser ? window.getAuthTgUser() : null;
@@ -44,7 +63,11 @@
     try {
       data = await api.getAll();
     } catch (e) {
-      setLoading("Не получилось загрузить данные из таблицы 😕\nОбнови страницу и попробуй ещё раз.");
+      setLoading(networkErrorText(e, "Не получилось загрузить данные из таблицы 😕"));
+      return;
+    }
+    if (data?.error) {
+      setLoading(payloadErrorText(data, "Не получилось загрузить данные из таблицы 😕"));
       return;
     }
 
@@ -74,7 +97,7 @@
         setLoading(error === "continue_token_expired" ? "Ссылка истекла, войдите заново." : "Черновик не найден или ссылка устарела.");
         return;
       } catch (e) {
-        setLoading("Не получилось открыть черновик 😕");
+        setLoading(networkErrorText(e, "Не получилось открыть черновик 😕"));
         return;
       }
     }
@@ -98,11 +121,11 @@
         }
 
         // fallback
-        setLoading("Результат не найден или ссылка устарела 😕");
+        setLoading(payloadErrorText(res, "Результат не найден или ссылка устарела 😕"));
         return;
 
       } catch (e) {
-        setLoading("Не получилось открыть результат 😕");
+        setLoading(networkErrorText(e, "Не получилось открыть результат 😕"));
         return;
       }
     }

@@ -107,6 +107,7 @@
 
   let serverDraftTimer = null;
   let serverDraftInFlight = false;
+  let serverDraftPromise = null;
 
   function getDraftOwnerMeta() {
     const user = STATE.tgUser || (window.getAuthTgUser ? window.getAuthTgUser() : null) || {};
@@ -141,46 +142,62 @@
 
   function refreshDraftStatusUi() {
     const el = document.getElementById("draftSyncLine");
-    if (!el) return;
     const status = norm(STATE.serverDraftStatus || "");
+    if (!el) {
+      refreshPhotoStatusUi();
+      return;
+    }
     if (status === "saving") {
       el.textContent = "Сохраняю черновик...";
+      refreshPhotoStatusUi();
+      return;
+    }
+    if (status === "queued") {
+      el.textContent = "Черновик ожидает сохранения";
+      refreshPhotoStatusUi();
       return;
     }
     if (status === "error") {
       el.textContent = "Черновик не сохранен на сервере";
+      refreshPhotoStatusUi();
       return;
     }
     if (STATE.serverDraftSavedAt) {
       el.textContent = `Черновик сохранен ${formatRuDateTime(STATE.serverDraftSavedAt)}`;
+      refreshPhotoStatusUi();
       return;
     }
     el.textContent = "Черновик сохранится автоматически";
+    refreshPhotoStatusUi();
   }
 
   async function saveServerDraftNow() {
-    if (serverDraftInFlight) return false;
+    if (serverDraftInFlight && serverDraftPromise) return serverDraftPromise;
     const payload = buildServerDraftPayload();
     if (!payload) return false;
     serverDraftInFlight = true;
     STATE.serverDraftStatus = "saving";
     STATE.serverDraftError = "";
     refreshDraftStatusUi();
-    try {
-      await api.saveDraft(payload);
-      STATE.serverDraftStatus = "saved";
-      STATE.serverDraftSavedAt = new Date().toISOString();
-      STATE.serverDraftError = "";
-      refreshDraftStatusUi();
-      return true;
-    } catch (err) {
-      STATE.serverDraftStatus = "error";
-      STATE.serverDraftError = String(err || "");
-      refreshDraftStatusUi();
-      return false;
-    } finally {
-      serverDraftInFlight = false;
-    }
+    serverDraftPromise = (async () => {
+      try {
+        await api.saveDraft(payload);
+        STATE.serverDraftStatus = "saved";
+        STATE.serverDraftSavedAt = new Date().toISOString();
+        STATE.serverDraftError = "";
+        refreshDraftStatusUi();
+        return true;
+      } catch (err) {
+        STATE.serverDraftStatus = "error";
+        STATE.serverDraftError = String(err || "");
+        refreshDraftStatusUi();
+        return false;
+      } finally {
+        serverDraftInFlight = false;
+        serverDraftPromise = null;
+      }
+    })();
+    return serverDraftPromise;
   }
 
   window.queueServerDraftSave = function queueServerDraftSave() {
@@ -194,6 +211,52 @@
       saveServerDraftNow();
     }, 12000);
   };
+
+  function photoStatusTextFor(photos) {
+    const list = Array.isArray(photos) ? photos.filter(Boolean) : [];
+    if (!list.length) return "";
+    const hasInline = list.some(src => /^data:image\//i.test(String(src || "")));
+    const status = norm(STATE.serverDraftStatus || "");
+    if (status === "error") return "Не удалось сохранить фото";
+    if (status === "saving") return "Фото загружаются...";
+    if (status === "queued" || hasInline) return "Фото ожидают сохранения";
+    if (status === "saved" || STATE.serverDraftSavedAt) return "Фото сохранены";
+    return "Фото ожидают сохранения";
+  }
+
+  function refreshPhotoStatusUi() {
+    document.querySelectorAll(".noteBlock").forEach(block => {
+      const qid = block.getAttribute("data-note-for");
+      const statusEl = block.querySelector(".photoSaveStatus");
+      if (!qid || !statusEl) return;
+      const photos = notePhotos(qid);
+      const text = photoStatusTextFor(photos);
+      statusEl.textContent = text;
+      statusEl.classList.toggle("is-error", norm(STATE.serverDraftStatus || "") === "error");
+      statusEl.style.display = text ? "" : "none";
+    });
+  }
+
+  function sleepMs(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function loadSubmittedResultWithRetry(submissionId) {
+    const id = norm(submissionId);
+    if (!id) throw new Error("submission_id_missing");
+    let lastError = null;
+    for (let i = 0; i < 4; i += 1) {
+      try {
+        const res = await api.getSubmission(id);
+        if (res?.ok) return res;
+        lastError = new Error(res?.error || "submission_not_ready");
+      } catch (err) {
+        lastError = err;
+      }
+      await sleepMs(700 + i * 400);
+    }
+    throw lastError || new Error("submission_not_ready");
+  }
 
   function getTelegramInitData() {
     try {
@@ -2988,7 +3051,9 @@
 
         const payload = buildSubmissionPayload(submissionId, result);
         saveDraft();
-        await saveServerDraftNow();
+        finishBtn.textContent = "Сохраняю фото...";
+        const draftSaved = await saveServerDraftNow();
+        if (!draftSaved) throw new Error("server_draft_save_failed");
 
         finishBtn.textContent = UI_TEXT?.submitSending || "Отправляю…";
 
@@ -3023,15 +3088,21 @@
         });
 
         // keep draft data so results can be restored if the app reloads after submit
-        finishBtn.textContent = UI_TEXT?.submitOk || "Готово ✅";
+        finishBtn.textContent = "Открываю отчет...";
+        const serverResult = await loadSubmittedResultWithRetry(STATE.lastResultId || submissionId);
+        renderReadonlyResult(DATA, serverResult);
+        return;
       } catch (e) {
-        alert(UI_TEXT?.submitFail || "Не удалось отправить результаты в таблицу. Попробуй ещё раз");
+        const msg = String(e?.message || e || "");
+        if (msg === "server_draft_save_failed") {
+          alert("Не удалось сохранить фото на сервере. Проверьте интернет и попробуйте завершить ещё раз.");
+        } else {
+          alert(UI_TEXT?.submitFail || "Не удалось отправить результаты в таблицу. Попробуй ещё раз");
+        }
         finishBtn.disabled = false;
         finishBtn.textContent = "Завершить";
         return;
       }
-
-      renderResultScreen(DATA, STATE.lastResult);
     };
 
     refreshFinishState();
@@ -3109,7 +3180,8 @@
           <button class="thumbDel" type="button" data-i="${i}">×</button>
         </div>
       `;
-    }).join("");
+    }).join("") + `<div class="photoSaveStatus"></div>`;
+    refreshPhotoStatusUi();
 
     row.querySelectorAll(".thumb").forEach(img => {
       img.onclick = () => {

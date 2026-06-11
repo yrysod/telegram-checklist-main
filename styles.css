@@ -775,6 +775,18 @@ textarea.comment::placeholder{ color: rgba(107, 114, 128, 0.75); }
   line-height: 1;
 }
 
+.photoSaveStatus{
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.25;
+  min-width: 120px;
+}
+
+.photoSaveStatus.is-error{
+  color: var(--danger);
+}
+
 .bottomBar{
   position: sticky;
   bottom: 0;
