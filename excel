@@ -614,18 +614,62 @@ function markDraftSubmitted_(ss, draftId) {
   return { ok: true, draft_id: id, status: "submitted" };
 }
 
+function getObjectAny_(obj, aliases) {
+  if (!obj) return "";
+  const keys = Object.keys(obj);
+  const direct = aliases.find(key => obj[key] !== undefined && obj[key] !== null && String(obj[key]).trim() !== "");
+  if (direct) return obj[direct];
+
+  const normalizedAliases = aliases.map(normalizeHeaderKey_);
+  for (let i = 0; i < keys.length; i += 1) {
+    const key = keys[i];
+    if (normalizedAliases.includes(normalizeHeaderKey_(key))) {
+      const value = obj[key];
+      if (value !== undefined && value !== null && String(value).trim() !== "") return value;
+    }
+  }
+  return "";
+}
+
+function buildQuestionSectionMap_(ss) {
+  const sections = readSheetAsObjects_(ss, SHEET_NAMES.sections);
+  const sectionTitleByCode = {};
+  (sections || []).forEach(section => {
+    const code = safe_(getObjectAny_(section, ["section_code", "section_id", "code", "id", "код", "код_раздела"]));
+    const title = safe_(getObjectAny_(section, ["title", "section_title", "name", "название", "раздел"]));
+    if (code) sectionTitleByCode[code] = title || code;
+  });
+
+  const map = {};
+  const questions = readSheetAsObjects_(ss, SHEET_NAMES.checklist);
+  (questions || []).forEach(question => {
+    const qid = safe_(getObjectAny_(question, ["question_id", "id", "questionId", "qid", "ID вопроса"]));
+    if (!qid || /^id\s*вопроса$/i.test(qid) || qid === "question_id") return;
+
+    const sectionCode = safe_(getObjectAny_(question, ["section_code", "section_id", "section", "раздел"]));
+    const sectionTitle = safe_(getObjectAny_(question, ["section_title", "section_name", "название_раздела"]));
+    map[qid] = {
+      section_code: sectionCode,
+      section_title: sectionTitle || sectionTitleByCode[sectionCode] || sectionCode || "Общая",
+    };
+  });
+  return map;
+}
+
 function normalizeDraftPhotosForStorage_(ss, payload, draftPayload) {
   const draft = draftPayload && typeof draftPayload === "object" ? draftPayload : {};
   const notes = draft.issueNotes || {};
   const rows = [];
   const keys = [];
+  const questionSectionMap = buildQuestionSectionMap_(ss);
 
   Object.keys(notes || {}).forEach((key, idx) => {
     const photos = normalizePhotosList_(notes[key]?.photos);
     if (!photos.some(isDataUrlImage_)) return;
+    const sectionMeta = questionSectionMap[key] || {};
     rows.push({
-      section_title: "Черновик",
-      section_code: "draft",
+      section_title: sectionMeta.section_title || "Черновик",
+      section_code: sectionMeta.section_code || "draft",
       question_id: key || `note_${idx + 1}`,
       photos,
     });
