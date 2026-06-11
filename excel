@@ -642,12 +642,13 @@ function mergeDraftPhotosIntoAnswerRows_(ss, payload, flatRows) {
     const rowPhotos = normalizePhotosList_(row?.photos)
       .filter(photo => !(hasStoredDraftPhotos && isDataUrlImage_(photo)));
 
-    const seen = new Set(rowPhotos.map(String));
+    const seen = new Set(rowPhotos.map(photoIdentityKey_));
     const mergedPhotos = [...rowPhotos];
     draftPhotos.forEach(photo => {
       const src = String(photo || "").trim();
-      if (!src || seen.has(src)) return;
-      seen.add(src);
+      const key = photoIdentityKey_(src);
+      if (!src || seen.has(key)) return;
+      seen.add(key);
       mergedPhotos.push(src);
       mergedCount += 1;
     });
@@ -1065,6 +1066,18 @@ function normalizePhotosList_(value) {
     return [value];
   }
   return [];
+}
+
+function photoIdentityKey_(value) {
+  const src = String(value || "").trim();
+  if (!src) return "";
+  const m1 = src.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (m1 && m1[1]) return `drive:${m1[1]}`;
+  const m2 = src.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (m2 && m2[1]) return `drive:${m2[1]}`;
+  const m3 = src.match(/googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/);
+  if (m3 && m3[1]) return `drive:${m3[1]}`;
+  return src;
 }
 
 function reuseExistingUploadedAnswerPhotos_(answersSheet, payload, flatRows) {

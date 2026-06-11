@@ -1317,6 +1317,28 @@
   }
 
   function dedupeIssues(issues) {
+    const photoKey = (value) => {
+      const src = norm(value);
+      const m1 = src.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+      if (m1 && m1[1]) return `drive:${m1[1]}`;
+      const m2 = src.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+      if (m2 && m2[1]) return `drive:${m2[1]}`;
+      const m3 = src.match(/googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/);
+      if (m3 && m3[1]) return `drive:${m3[1]}`;
+      return src;
+    };
+    const dedupePhotos = (photos) => {
+      const out = [];
+      const seen = new Set();
+      (Array.isArray(photos) ? photos : []).forEach(photo => {
+        const src = norm(photo);
+        const key = photoKey(src);
+        if (!src || seen.has(key)) return;
+        seen.add(key);
+        out.push(photo);
+      });
+      return out;
+    };
     const map = new Map();
     (issues || []).forEach(item => {
       const key = [
@@ -1328,7 +1350,7 @@
       if (!existing) {
         map.set(key, {
           ...item,
-          photos: Array.isArray(item.photos) ? [...item.photos] : [],
+          photos: dedupePhotos(item.photos),
         });
         return;
       }
@@ -1336,14 +1358,16 @@
       if (!existing.comment && item.comment) existing.comment = item.comment;
       if (!existing.photos?.length && item.photos?.length) existing.photos = [...item.photos];
       else if (item.photos?.length) {
-        const seen = new Set(existing.photos || []);
+        const seen = new Set((existing.photos || []).map(photoKey));
         item.photos.forEach(photo => {
-          if (!seen.has(photo)) {
-            seen.add(photo);
+          const key = photoKey(photo);
+          if (!seen.has(key)) {
+            seen.add(key);
             existing.photos.push(photo);
           }
         });
       }
+      existing.photos = dedupePhotos(existing.photos);
     });
     return [...map.values()];
   }
