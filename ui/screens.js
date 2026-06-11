@@ -3090,7 +3090,7 @@
         // keep draft data so results can be restored if the app reloads after submit
         finishBtn.textContent = "Открываю отчет...";
         const serverResult = await loadSubmittedResultWithRetry(STATE.lastResultId || submissionId);
-        renderReadonlyResult(DATA, serverResult);
+        renderReadonlyResult(DATA, serverResult, { showShare: true });
         return;
       } catch (e) {
         const msg = String(e?.message || e || "");
@@ -3828,6 +3828,9 @@
     const submittedAt = lastTs ? (formatRuDateTime(lastTs) || norm(lastTs)) : "";
     const backMode = opts?.backMode === "cabinet" ? "cabinet" : "start";
     const backLabel = backMode === "cabinet" ? "К моим проверкам" : "На главную";
+    const showShare = !!opts?.showShare;
+    const submissionId = norm(submissionPayload?.submission_id || sub.submission_id || stored.submission_id || "");
+    const resultLink = buildResultLink(submissionId);
 
     mount(`
       <div class="container">
@@ -3841,9 +3844,11 @@
             date: submittedAt,
           },
         })}
-        <div class="resultActions">
-          <button id="backToStartBtn" class="btn primary">${escapeHtml(backLabel)}</button>
-        </div>
+        ${showShare
+          ? tplResultActions({ showShare: true, resultLink })
+          : `<div class="resultActions">
+              <button id="backToStartBtn" class="btn primary">${escapeHtml(backLabel)}</button>
+            </div>`}
 
         <div class="card">
           <div class="cardHeader">
@@ -3880,6 +3885,33 @@
         STATE.branchId = "";
         saveDraft();
         renderStart(DATA);
+      };
+    }
+
+    const newBtn = document.getElementById("newCheckBtn");
+    if (newBtn) {
+      newBtn.onclick = () => {
+        if (STATE.branchId) clearDraftStorageOnly(STATE.branchId);
+        resetAllState();
+        saveDraft();
+        renderStart(DATA);
+      };
+    }
+
+    const copyBtn = document.getElementById("copyResultLinkBtn");
+    if (copyBtn) {
+      copyBtn.onclick = async () => {
+        if (!resultLink) return;
+        const ok = await copyTextToClipboard(resultLink);
+        const linkInput = document.getElementById("resultShareLink");
+        if (linkInput) {
+          linkInput.focus();
+          linkInput.select();
+        }
+        copyBtn.textContent = ok ? "Ссылка скопирована ✅" : "Не удалось скопировать";
+        setTimeout(() => {
+          if (copyBtn.isConnected) copyBtn.textContent = "Скопировать ссылку";
+        }, 1500);
       };
     }
   };
