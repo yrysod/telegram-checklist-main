@@ -1,12 +1,12 @@
 /* config.js — глобальные настройки и fallback (реальные значения берём из листа «Настройки») */
 
 // ====== BUILD / CACHE ======
-const APP_VERSION = "2026-06-08-06"; // меняй, чтобы пробивать кэш GitHub Pages
+const APP_VERSION = "2026-06-11-01"; // меняй, чтобы пробивать кэш GitHub Pages
 
 // ====== API (Google Apps Script Web App) ======
 // Используй PROD (/exec), не /dev
 const API_BASE_URL =
-  "https://script.google.com/macros/s/AKfycbywS3eKB2_gERi_ksKdqGiaPLEyec4XxRQ9jC_Hi_T4ry2DXiTvTJYqyEXaBvzKuR4A2Q/exec";
+  "https://script.google.com/macros/s/AKfycbwVrliZg2mQJOcXvBZUxb2ukfHfmmfuLdVWXU0f1HUlUpnlUHb_KpVOOjbUTVaKiqTp5Q/exec";
 
 // Чтение данных (JSONP)
 const DATA_JSONP_URL = API_BASE_URL;
