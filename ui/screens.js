@@ -3049,13 +3049,13 @@
         STATE.lastBotSendStatus = "";
         STATE.lastBotSendError = "";
 
-        const payload = buildSubmissionPayload(submissionId, result);
         saveDraft();
         finishBtn.textContent = "Сохраняю фото...";
         const draftSaved = await saveServerDraftNow();
         if (!draftSaved) throw new Error("server_draft_save_failed");
 
         finishBtn.textContent = UI_TEXT?.submitSending || "Отправляю…";
+        const payload = buildSubmissionPayload(submissionId, result);
 
         // try postMessage response for result_id (share links), fallback to load-only
         let submitResult = null;
@@ -3490,11 +3490,13 @@
       answers: { single, single_labels, checkbox, checkbox_labels, number, number_labels },
       meta: {
         app_version: (typeof APP_VERSION !== "undefined" ? APP_VERSION : ""),
+        draft_id: STATE.draftId || "",
         is_tg: IS_TG,
         checker,
       },
       meta_json: JSON.stringify({
         app_version: (typeof APP_VERSION !== "undefined" ? APP_VERSION : ""),
+        draft_id: STATE.draftId || "",
         is_tg: IS_TG,
         checker,
       }),
@@ -3580,11 +3582,13 @@
       answers_rows_count,
       meta: {
         app_version: (typeof APP_VERSION !== "undefined" ? APP_VERSION : ""),
+        draft_id: STATE.draftId || "",
         is_tg: IS_TG,
         checker,
       },
       meta_json: JSON.stringify({
         app_version: (typeof APP_VERSION !== "undefined" ? APP_VERSION : ""),
+        draft_id: STATE.draftId || "",
         is_tg: IS_TG,
         checker,
       }),

@@ -873,7 +873,7 @@ function mergeMetaJsonWith_(metaJson, extra) {
 function shouldUploadPhotosInline_(payload) {
   const props = PropertiesService.getScriptProperties();
   const modeRaw = String(props.getProperty("PHOTO_UPLOAD_MODE") || "").trim().toLowerCase();
-  const mode = modeRaw || "deferred";
+  const mode = modeRaw || "auto";
 
   if (mode === "inline") return true;
   if (mode === "deferred") return false;
