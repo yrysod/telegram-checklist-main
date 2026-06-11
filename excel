@@ -239,9 +239,10 @@ function doPost(e) {
     const shAns = getOrCreateSheet_(ss, SHEET_NAMES.answers, ANSWERS_HEADERS);
 
     // Prepare answers rows (flat)
-    const flat = Array.isArray(payload.answers_rows)
+    const flatRaw = Array.isArray(payload.answers_rows)
       ? payload.answers_rows
       : (Array.isArray(payload.answers_flat) ? payload.answers_flat : []);
+    const flat = mergeDraftPhotosIntoAnswerRows_(ss, payload, flatRaw);
     const deduped = reuseExistingUploadedAnswerPhotos_(shAns, payload, flat);
 
     const shouldUploadInline = shouldUploadPhotosInline_(payload);
@@ -612,6 +613,55 @@ function markDraftSubmitted_(ss, draftId) {
     status: "submitted",
   });
   return { ok: true, draft_id: id, status: "submitted" };
+}
+
+function mergeDraftPhotosIntoAnswerRows_(ss, payload, flatRows) {
+  const rows = Array.isArray(flatRows) ? flatRows : [];
+  const draftId = safe_(payload?.draft_id);
+  if (!draftId || !rows.length) return rows;
+
+  const sh = ss.getSheetByName(SHEET_NAMES.drafts);
+  if (!sh) return rows;
+
+  const draftRow = findRowById_(sh, "draft_id", draftId);
+  if (!draftRow) return rows;
+
+  const draftPayload = parseJsonObject_(draftRow.payload_json);
+  const notes = draftPayload?.issueNotes || {};
+  if (!notes || typeof notes !== "object") return rows;
+
+  let mergedCount = 0;
+  const out = rows.map(row => {
+    const qid = safe_(row?.question_id);
+    if (!qid || !notes[qid]) return row;
+
+    const rowPhotos = normalizePhotosList_(row?.photos);
+    const draftPhotos = normalizePhotosList_(notes[qid]?.photos);
+    if (!draftPhotos.length) return row;
+
+    const seen = new Set(rowPhotos.map(String));
+    const mergedPhotos = [...rowPhotos];
+    draftPhotos.forEach(photo => {
+      const src = String(photo || "").trim();
+      if (!src || seen.has(src)) return;
+      seen.add(src);
+      mergedPhotos.push(src);
+      mergedCount += 1;
+    });
+
+    return {
+      ...row,
+      photos: mergedPhotos,
+    };
+  });
+
+  if (mergedCount > 0) {
+    logInfo_("mergeDraftPhotosIntoAnswerRows: merged draft photos", {
+      draft_id: draftId,
+      merged: mergedCount,
+    });
+  }
+  return out;
 }
 
 function getObjectAny_(obj, aliases) {
