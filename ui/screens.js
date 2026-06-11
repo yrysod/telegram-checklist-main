@@ -3819,7 +3819,25 @@
 
     let issues = [];
     if (answerRows.length) {
-      issues = dedupeIssues(buildIssuesFromAnswerRows(answerRows).map(mergeIssue));
+      const rowIssues = buildIssuesFromAnswerRows(answerRows).map(mergeIssue);
+      const snapshotIssues = payloadIssues.map(it => {
+        const scoreVal = it.scoreEarned ?? it.score_earned ?? it.score ?? "";
+        const scoreMax = it.scoreMax ?? it.score_max ?? "";
+        const severityRaw = norm(it.severity || "").toLowerCase();
+        const severity = severityRaw === "critical" ? "critical" : "noncritical";
+        return {
+          qid: it.qid || it.question_id || "",
+          title: it.title || it.question || "",
+          sectionTitle: it.sectionTitle || it.section || it.section_title || "",
+          severity,
+          score: scoreVal,
+          scoreEarned: scoreVal,
+          scoreMax,
+          comment: it.comment || "",
+          photos: it.photos || [],
+        };
+      });
+      issues = dedupeIssues([...rowIssues, ...snapshotIssues]);
     } else if (hasAnswersPayload) {
       issues = dedupeIssues(buildIssuesFromAnswers(storedAnswers).map(mergeIssue));
     } else if (payloadIssues.length) {

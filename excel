@@ -263,6 +263,7 @@ function doPost(e) {
     const meta = payload.meta || {};
     const metaJson = mergeMetaJsonWith_(payload.meta_json, {
       drive_upload: driveUpload.meta,
+      saved_payload: buildSavedSubmissionPayload_(payload, effectiveFlat),
     });
     const tgUserId = safe_(payload.tg_user_id || payload.tg_id || tg.user_id || tg.id);
 
@@ -666,6 +667,30 @@ function mergeDraftPhotosIntoAnswerRows_(ss, payload, flatRows) {
     });
   }
   return out;
+}
+
+function buildSavedSubmissionPayload_(payload, effectiveFlat) {
+  if (payload?.partial) return null;
+
+  const rows = (Array.isArray(effectiveFlat) ? effectiveFlat : []).map(row => ({
+    ...row,
+    photos_json: json_(row?.photos || []),
+  }));
+  const normalizedRows = normalizeAnswersRows_(rows);
+  const rowIssues = buildIssuesFromAnswerRows_(normalizedRows);
+
+  return {
+    submission_id: safe_(payload?.submission_id),
+    zone: safe_(payload?.zone),
+    percent: payload?.percent ?? "",
+    city: safe_(payload?.city),
+    branch_id: safe_(payload?.branch_id),
+    branch_name: safe_(payload?.branch_name),
+    fio: safe_(payload?.fio),
+    submitted_at: safe_(payload?.submitted_at),
+    answers: payload?.answers || {},
+    issues: rowIssues.length ? rowIssues : (Array.isArray(payload?.issues) ? payload.issues : []),
+  };
 }
 
 function getObjectAny_(obj, aliases) {
@@ -1728,11 +1753,14 @@ function getSubmissionPayload_(ss, submissionId) {
   const answers = findRowsById_(ss.getSheetByName(SHEET_NAMES.answers), "submission_id", submissionId);
   const answersNormalized = normalizeAnswersRows_(answers);
   const issues = buildIssuesFromAnswerRows_(answersNormalized);
+  const meta = parseJsonObject_(sub.meta_json);
+  const savedPayload = meta?.saved_payload && typeof meta.saved_payload === "object" ? meta.saved_payload : null;
 
   return {
     ok: true,
     submission_id: submissionId,
     submission: sub,
+    payload: savedPayload,
     answers,
     answers_normalized: answersNormalized,
     issues,
