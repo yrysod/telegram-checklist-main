@@ -2656,14 +2656,21 @@
             const exp = res.expires_at ? formatRuDateTime(res.expires_at) : "";
             const expText = `Действует 8 часов${exp ? `, до ${exp}` : ""}.`;
             continueDraftHint.innerHTML = `
-              <div class="copyManualBox">
-                <div>${ok ? "Ссылка готова. Попробуйте вставить её в чат." : "Не получилось скопировать автоматически."} ${escapeHtml(expText)}</div>
-                <input id="continueDraftLinkInput" class="copyManualInput" type="text" readonly value="${escapeHtml(link)}" />
-                <div class="copyManualHelp">Если ссылка не вставляется, зажмите поле и скопируйте вручную.</div>
+              <div class="resultShareBox continueShareBox">
+                <label class="fieldLabel" for="continueDraftLinkInput">Ссылка для продолжения</label>
+                <input id="continueDraftLinkInput" type="text" readonly value="${escapeHtml(link)}" />
+                <button id="selectContinueDraftLinkBtn" class="btn ghost" type="button">Выделить ссылку</button>
+                <div class="copyManualHelp">${ok ? "Ссылка также отправлена в буфер обмена, если Telegram разрешил копирование." : "Нажмите на поле или кнопку, затем скопируйте ссылку вручную."} ${escapeHtml(expText)}</div>
               </div>
             `;
             const input = document.getElementById("continueDraftLinkInput");
-            setTimeout(() => window.selectCopyField && selectCopyField(input), 0);
+            const selectBtn = document.getElementById("selectContinueDraftLinkBtn");
+            const selectLink = () => window.selectCopyField && selectCopyField(input);
+            if (input) {
+              input.onclick = selectLink;
+              input.onfocus = selectLink;
+            }
+            if (selectBtn) selectBtn.onclick = selectLink;
           }
         } catch (err) {
           if (continueDraftHint) continueDraftHint.textContent = "Не удалось создать ссылку продолжения.";
