@@ -25,23 +25,52 @@
 
   // ---------- Clipboard ----------
   window.copyTextToClipboard = async function copyTextToClipboard(text) {
+    const value = String(text || "");
+    if (!value) return false;
+
     try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      // fallback
-      try {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(value);
         return true;
+      }
+    } catch {
+      // fall through to legacy fallback
+    }
+
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.setAttribute("readonly", "readonly");
+      ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.left = "0";
+      ta.style.width = "1px";
+      ta.style.height = "1px";
+      ta.style.opacity = "0";
+      ta.style.fontSize = "16px";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, value.length);
+      const ok = typeof document.execCommand === "function" && document.execCommand("copy");
+      document.body.removeChild(ta);
+      return Boolean(ok);
+    } catch {
+      return false;
+    }
+  };
+
+  window.selectCopyField = function selectCopyField(input) {
+    if (!input) return;
+    try {
+      input.focus();
+      input.select();
+      input.setSelectionRange(0, input.value.length);
+    } catch {
+      try {
+        input.focus();
       } catch {
-        return false;
+        // no-op
       }
     }
   };

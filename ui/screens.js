@@ -2654,9 +2654,16 @@
           const ok = window.copyTextToClipboard ? await copyTextToClipboard(link) : false;
           if (continueDraftHint) {
             const exp = res.expires_at ? formatRuDateTime(res.expires_at) : "";
-            continueDraftHint.textContent = ok
-              ? `Ссылка скопирована. Действует 8 часов${exp ? `, до ${exp}` : ""}.`
-              : link;
+            const expText = `Действует 8 часов${exp ? `, до ${exp}` : ""}.`;
+            continueDraftHint.innerHTML = `
+              <div class="copyManualBox">
+                <div>${ok ? "Ссылка готова. Попробуйте вставить её в чат." : "Не получилось скопировать автоматически."} ${escapeHtml(expText)}</div>
+                <input id="continueDraftLinkInput" class="copyManualInput" type="text" readonly value="${escapeHtml(link)}" />
+                <div class="copyManualHelp">Если ссылка не вставляется, зажмите поле и скопируйте вручную.</div>
+              </div>
+            `;
+            const input = document.getElementById("continueDraftLinkInput");
+            setTimeout(() => window.selectCopyField && selectCopyField(input), 0);
           }
         } catch (err) {
           if (continueDraftHint) continueDraftHint.textContent = "Не удалось создать ссылку продолжения.";
