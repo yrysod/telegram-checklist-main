@@ -27,14 +27,29 @@
   };
 
   // ---------- dates ----------
+  const APP_TIMEZONE = "Asia/Krasnoyarsk";
+
   window.formatRuDateTime = function formatRuDateTime(iso) {
     try {
-      const d = new Date(iso);
-      const dd = String(d.getDate()).padStart(2, "0");
-      const mm = String(d.getMonth() + 1).padStart(2, "0");
-      const yyyy = d.getFullYear();
-      const hh = String(d.getHours()).padStart(2, "0");
-      const mi = String(d.getMinutes()).padStart(2, "0");
+      const d = iso instanceof Date ? iso : new Date(iso);
+      if (!Number.isFinite(d.getTime())) return "";
+      const parts = new Intl.DateTimeFormat("ru-RU", {
+        timeZone: APP_TIMEZONE,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(d);
+
+      const get = (type) => parts.find(p => p.type === type)?.value || "";
+      const dd = get("day");
+      const mm = get("month");
+      const yyyy = get("year");
+      const hh = get("hour");
+      const mi = get("minute");
+      if (!dd || !mm || !yyyy || !hh || !mi) return "";
       return `${dd}.${mm}.${yyyy} ${hh}:${mi}`;
     } catch {
       return "";
@@ -47,7 +62,7 @@
       if (!Number.isFinite(d.getTime())) return "";
 
       const parts = new Intl.DateTimeFormat("ru-RU", {
-        timeZone: "Europe/Moscow",
+        timeZone: APP_TIMEZONE,
         year: "numeric",
         month: "2-digit",
         day: "2-digit",

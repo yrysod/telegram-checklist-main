@@ -48,8 +48,14 @@
         try {
           const d = new Date(ts);
           if (Number.isNaN(d.getTime())) return String(ts == null ? "" : ts);
-          const pad = (n) => String(n).padStart(2, "0");
-          return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+          return d.toLocaleString("ru-RU", {
+            timeZone: "Asia/Krasnoyarsk",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+          });
         } catch (e) {
           return String(ts == null ? "" : ts);
         }

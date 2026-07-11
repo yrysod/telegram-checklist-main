@@ -33,7 +33,14 @@
         try {
           const d = new Date(iso);
           if (!isFinite(d.getTime())) return "";
-          return d.toLocaleString("ru-RU", { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
+          return d.toLocaleString("ru-RU", {
+            timeZone: "Asia/Krasnoyarsk",
+            year:"numeric",
+            month:"2-digit",
+            day:"2-digit",
+            hour:"2-digit",
+            minute:"2-digit",
+          });
         } catch { return ""; }
       };
 

@@ -104,6 +104,7 @@ const SETTINGS = {
 const MY_SUBMISSIONS_DEFAULT_LIMIT = 200;
 const CONTINUE_TOKEN_TTL_HOURS = 8;
 const DRAFT_TTL_HOURS = 24;
+const APP_TIMEZONE = "Asia/Krasnoyarsk";
 
 const LOG_HEADERS = ["ts", "level", "message", "data"];
 
@@ -965,10 +966,10 @@ function uploadAnswerPhotosToDrive_(ss, payload, flatRows) {
     };
   }
 
-  const dateFolderName = formatDateFolderNameMsk_(new Date());
+  const dateFolderName = buildDateFolderNameKrasnoyarsk_(new Date(), payload);
   let dateFolder;
   try {
-    dateFolder = ensureChildFolderByName_(resolver.folder, dateFolderName);
+    dateFolder = ensureDateFolderByName_(resolver.folder, dateFolderName);
   } catch (err) {
     logError_("uploadAnswerPhotosToDrive: date folder create/open failed", err);
     return {
@@ -1417,7 +1418,7 @@ function appendLogRow_(level, message, data) {
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     const sh = getOrCreateSheet_(ss, SHEET_NAMES.logs, LOG_HEADERS);
     sh.appendRow([
-      Utilities.formatDate(new Date(), "Europe/Moscow", "yyyy-MM-dd HH:mm:ss"),
+      Utilities.formatDate(new Date(), APP_TIMEZONE, "yyyy-MM-dd HH:mm:ss"),
       String(level || ""),
       String(message || ""),
       typeof data === "string" ? data : json_(data),
@@ -1485,8 +1486,60 @@ function sanitizeDriveName_(value) {
   return cleaned || "Без названия";
 }
 
-function formatDateFolderNameMsk_(date) {
-  return Utilities.formatDate(date || new Date(), "Europe/Moscow", "yyyy-MM-dd");
+function ensureDateFolderByName_(parentFolder, name) {
+  const cleanName = sanitizeDriveName_(name || "Проверка");
+  const baseDate = String(cleanName).match(/^\d{4}-\d{2}-\d{2}/)?.[0] || "";
+  if (!baseDate) return ensureChildFolderByName_(parentFolder, cleanName);
+
+  let fallback = null;
+  const folders = parentFolder.getFolders();
+  while (folders.hasNext()) {
+    const folder = folders.next();
+    const folderName = String(folder.getName() || "").trim();
+    if (folderName === cleanName) return folder;
+    if (!fallback && (folderName === baseDate || folderName.indexOf(`${baseDate} `) === 0)) {
+      fallback = folder;
+    }
+  }
+
+  if (fallback) {
+    try {
+      if (fallback.getName() !== cleanName) fallback.setName(cleanName);
+    } catch (_) {}
+    return fallback;
+  }
+
+  return parentFolder.createFolder(cleanName);
+}
+
+function buildDateFolderNameKrasnoyarsk_(date, payload) {
+  const base = Utilities.formatDate(date || new Date(), APP_TIMEZONE, "yyyy-MM-dd");
+  const percent = formatFolderPercent_(payload);
+  return percent ? `${base} ${percent}` : base;
+}
+
+function formatDateFolderNameKrasnoyarsk_(date) {
+  return Utilities.formatDate(date || new Date(), APP_TIMEZONE, "yyyy-MM-dd");
+}
+
+function formatFolderPercent_(payload) {
+  const raw = (
+    payload?.percent !== undefined && payload?.percent !== null && String(payload.percent).trim() !== ""
+      ? payload.percent
+      : payload?.percent_value
+  );
+  let num = raw;
+  if ((num === undefined || num === null || String(num).trim() === "") && payload?.earned !== undefined && payload?.max_score) {
+    const earned = Number(String(payload.earned).replace(",", "."));
+    const max = Number(String(payload.max_score).replace(",", "."));
+    if (Number.isFinite(earned) && Number.isFinite(max) && max > 0) num = (earned / max) * 100;
+  }
+
+  const cleaned = String(num ?? "").replace("%", "").replace(",", ".").trim();
+  if (!cleaned) return "";
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed)) return "";
+  return `${Math.round(parsed)}%`;
 }
 
 function isDataUrlImage_(value) {
